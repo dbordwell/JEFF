@@ -61,8 +61,14 @@ jobs:
         # binary actually starts, and that the install path runs end to end against a
         # temporary directory. No API key, so this exercises setup, not fetching.
         run: |
-          .\dist\ajz-refresh.exe --status
-          if ($LASTEXITCODE -ne 0) { throw "binary failed to start" }
+          # --noconsole builds a GUI-subsystem binary: PowerShell does not wait for it and
+          # $LASTEXITCODE is meaningless (it reported failure while the exe was still
+          # printing). Start-Process -Wait -PassThru is the only way to get a real exit
+          # code, and a windowed process has no console to inherit, so stdout goes to a file.
+          $p = Start-Process -FilePath .\dist\ajz-refresh.exe -ArgumentList '--status' `
+                 -Wait -PassThru -RedirectStandardOutput status.txt -RedirectStandardError status.err
+          Get-Content status.txt, status.err
+          if ($p.ExitCode -ne 0) { throw "binary exited $($p.ExitCode)" }
 
       - uses: actions/upload-artifact@v4
         with:
