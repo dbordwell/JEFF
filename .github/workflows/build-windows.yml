@@ -1,0 +1,71 @@
+name: Build Windows installer
+
+# The shipped artefact is a Windows binary, and this project is developed on macOS.
+# Cross-building a Windows PyInstaller executable from macOS is not possible, so the
+# build has to happen on a real Windows runner. That is a hard requirement, not a
+# convenience — see spec §3.2.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # Run the suite on both platforms. Most of the code is platform-independent, but the
+    # install path and file locking behave differently on Windows, and those are exactly
+    # the areas that cannot be exercised on the development machine.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras --dev
+      - run: uv run pytest -v
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - run: uv sync --dev
+      - run: uv pip install pyinstaller
+
+      - name: Build the executable
+        # --onefile      : one artefact to hand over, nothing to unpack
+        # --noconsole    : no console window flashes on Jeff's screen each morning;
+        #                  all diagnostics go to the log file instead
+        # --name         : matches install.EXE_NAME so the scheduled task path is right
+        run: |
+          uv run pyinstaller `
+            --onefile `
+            --noconsole `
+            --name ajz-refresh `
+            --collect-all openpyxl `
+            --hidden-import ajz.fmp `
+            ajz/__main__.py
+
+      - name: Smoke-test the binary on real Windows
+        # The check the macOS test suite structurally cannot make: that the frozen
+        # binary actually starts, and that the install path runs end to end against a
+        # temporary directory. No API key, so this exercises setup, not fetching.
+        run: |
+          .\dist\ajz-refresh.exe --status
+          if ($LASTEXITCODE -ne 0) { throw "binary failed to start" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ajz-refresh-windows
+          path: dist/ajz-refresh.exe
+          retention-days: 90
