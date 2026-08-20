@@ -131,17 +131,41 @@ def write_config(api_key: str, target_dir: Path | None = None) -> Path:
 def find_bundled_key(bundle_dir: Path | None = None) -> str | None:
     """Look for a config.json shipped alongside the installer.
 
-    This is how the install stays zero-question: Dave bundles the key when packaging, so
+    This is how the install stays zero-question: the key is supplied when packaging, so
     Jeff double-clicks and is done. If it is absent, `install()` will say what is needed
     rather than prompting — a prompt is a thing that can be got wrong.
+
+    Two locations are searched, in this order:
+
+    1. Beside the .exe — where a config.json sent separately will sit. This is the one
+       that matters when the binary is downloaded from a public release, because the key
+       cannot be published alongside it.
+    2. `sys._MEIPASS` — the temp folder a --onefile build unpacks into, which only holds
+       a config.json that was baked in at build time.
+
+    The order is the whole point. Under --onefile `_MEIPASS` is *always* set, so checking
+    it first meant a config.json sitting next to the exe was never found, and setup died
+    with "no API key" while the file was right there.
     """
-    base = bundle_dir or Path(getattr(sys, "_MEIPASS", Path(sys.argv[0]).parent))
-    candidate = Path(base) / "config.json"
-    if candidate.exists():
+    if bundle_dir is not None:
+        bases = [Path(bundle_dir)]
+    else:
+        exe = Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0])
+        bases = [exe.parent]
+        unpacked = getattr(sys, "_MEIPASS", None)
+        if unpacked:
+            bases.append(Path(unpacked))
+
+    for base in bases:
+        candidate = base / "config.json"
+        if not candidate.exists():
+            continue
         try:
-            return str(json.loads(candidate.read_text(encoding="utf-8")).get("fmp_api_key") or "") or None
+            key = str(json.loads(candidate.read_text(encoding="utf-8")).get("fmp_api_key") or "") or None
         except (json.JSONDecodeError, OSError):
-            return None
+            continue
+        if key:
+            return key
     return None
 
 

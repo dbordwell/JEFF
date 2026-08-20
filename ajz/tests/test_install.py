@@ -229,3 +229,37 @@ def test_status_reports_what_is_present(tmp_path):
     assert result["config_present"] is True
     assert result["exe_present"] is False
     assert result["install_dir"] == str(tmp_path)
+
+
+def test_bundled_key_is_found_next_to_the_exe_not_only_in_the_unpack_dir(tmp_path, monkeypatch):
+    # Regression: under PyInstaller --onefile, sys._MEIPASS always exists and points at a
+    # temp unpack folder. Checking it first meant a config.json handed over separately and
+    # saved beside the exe was never seen, and setup failed with "no API key" while the
+    # file sat right there. That is the only delivery route when the exe ships via a
+    # public release, where the key cannot be published with it.
+    exe_dir = tmp_path / "Downloads"
+    exe_dir.mkdir()
+    (exe_dir / "config.json").write_text(json.dumps({"fmp_api_key": "beside-the-exe"}))
+
+    unpack = tmp_path / "_MEI12345"
+    unpack.mkdir()
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "AJZ-Setup.exe"), raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(unpack), raising=False)
+
+    assert find_bundled_key() == "beside-the-exe"
+
+
+def test_bundled_key_falls_back_to_a_build_time_baked_config(tmp_path, monkeypatch):
+    exe_dir = tmp_path / "Downloads"
+    exe_dir.mkdir()
+    unpack = tmp_path / "_MEI12345"
+    unpack.mkdir()
+    (unpack / "config.json").write_text(json.dumps({"fmp_api_key": "baked-in"}))
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "AJZ-Setup.exe"), raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(unpack), raising=False)
+
+    assert find_bundled_key() == "baked-in"
