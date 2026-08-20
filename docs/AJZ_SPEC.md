@@ -419,11 +419,11 @@ Full technical logs go to `%LOCALAPPDATA%\AJZ\logs\` for Dave, and Jeff is never
 
 ## 11. Security
 
-`Spec Files/AJZ_Dashboard_v5.1 (1).xlsx` ships a **live FMP API key in plaintext** in `Settings!B1`,
+`Spec Files/AJZ_Dashboard_v5.1 (1).xlsx` shipped an **FMP API key in plaintext** in `Settings!B1`,
 readable without opening Excel. Copilot advised handing that file plus the key to an Upwork
 freelancer.
 
-- **Jeff must rotate the key** in his FMP account before we go live.
+- The original key has been rotated; the exposed one is dead.
 - The new key lives in `%LOCALAPPDATA%\AJZ\config.json`, never in the workbook.
 - Consequence: the workbook is now safe to email to anyone.
 
@@ -491,7 +491,6 @@ budget is not a constraint.
 **For Jeff:**
 
 1. **Confirm the ~40–50 starting tickers** for the universe.
-2. **Rotate the FMP API key** (§11) — the current one is exposed in the shared workbook.
 
 **For Dave (delivery):**
 

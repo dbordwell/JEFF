@@ -113,11 +113,3 @@ and we'd rather ask than quietly pick for you.
    tracked? Around 40–50 is comfortable — the limit isn't the computer, it's that you have
    to hand-score conviction for each one.
 
----
-
-## One housekeeping item
-
-Your FMP API key is sitting in plain text inside the old workbook, and that file has been
-emailed around. Worth logging into FMP and regenerating it. The new dashboard keeps the key
-in a separate settings file on your PC, so the spreadsheet itself is safe to share with
-anyone.

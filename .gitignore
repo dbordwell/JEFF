@@ -12,7 +12,7 @@ config.json
 *.key
 .env
 
-# Jeff's original workbook contains a live FMP API key in plaintext — never commit
+# Jeff's original workbook and source chats — inputs, not deliverables
 Spec Files/
 
 # Local session/tooling state

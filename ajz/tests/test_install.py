@@ -13,6 +13,7 @@ the check that closes that gap.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -214,8 +215,12 @@ def test_install_summary_is_plain_english(tmp_path):
 # --- uninstall ------------------------------------------------------------------------
 
 
-def test_uninstall_on_non_windows_reports_false_rather_than_crashing():
-    assert uninstall(runner=FakeRunner()) is False
+def test_uninstall_reports_platform_appropriate_result_rather_than_crashing():
+    # On Windows there is a scheduled task and registry state to tear down, so uninstall
+    # does real work and reports True. Everywhere else there is nothing to remove: it must
+    # report False rather than raise, so the CI smoke run on windows-latest stays green.
+    expected = sys.platform == "win32"
+    assert uninstall(runner=FakeRunner()) is expected
 
 
 def test_status_reports_what_is_present(tmp_path):
