@@ -1,15 +1,23 @@
 # AJZ Dashboard — Build Spec v1
 
-**Status:** Phases 1–6 complete. Remaining: Windows CI build + first real install. · **Written:** 2026-08-19 · **Owner:** Dave · **User:** Jeff
+**Status:** Built and green on CI. Remaining: first real install. · **Written:** 2026-08-19 · **Owner:** Dave · **User:** Jeff
 
 This spec replaces `Spec Files/AJZ_Dashboard_v5.1 (1).xlsx` and the Copilot chat plans entirely.
 Those are kept as *evidence and methodology source*, not as a starting point.
+
+> **This is a reference, not a read-through.** It is the record of *why* each decision was
+> made, so it can be checked when one is questioned. For getting something done instead:
+> [README](../README.md) to understand the project, [DEPLOY](DEPLOY.md) to ship it.
+>
+> Most-asked sections: [§3.3a why there is no scheduled task](#33a-no-scheduled-task--reversing-the-zero-click-decision) ·
+> [§6 the calculations](#6-calculations) · [§7 the Conviction problem](#7-the-conviction-problem--the-real-blocker) ·
+> [§10 failure behaviour](#10-failure-behaviour) · [§15 live-data findings](#15-live-data-findings-probed--first-end-to-end-run-2026-08-19)
 
 ---
 
 ## 1. What we are building
 
-A **single Excel file** on Jeff's Windows PC that is **already up to date every morning**, ranking
+A **single Excel file** on Jeff's Windows PC that is **current the moment he opens it**, ranking
 a universe of stocks by his own "AJZ Rule 3.0" methodology.
 
 Jeff's job is to **open the file and read it**. That is the entire user manual.
@@ -42,7 +50,8 @@ Explicit consequences, which override convenience at build time:
 What Jeff experiences, start to finish:
 
 1. Dave sends him one installer. He double-clicks it once. It asks for nothing.
-2. Forever after: he opens `AJZ Dashboard.xlsx` from his desktop.
+2. Forever after: he clicks **AJZ Dashboard** on his desktop. It fetches, updates, and opens
+   the workbook — a few seconds, one click, and it says what it is doing while it works.
 3. The front sheet says either **"Data current as of <date/time>"** in green, or a plain-English
    problem statement in amber/red.
 4. He reads his rankings.
@@ -124,19 +133,36 @@ use produce gaps in the series and rank-change alerts sample irregularly. Accept
 
 ## 4. Refresh cadence — two-speed
 
-An important efficiency point that also solves the API budget:
+> ⚠️ **NOT IMPLEMENTED as of 2026-08-23.** `cache_dir` exists in `config.py` and is used
+> nowhere. Every run does a **full fundamentals pull** — roughly 8 calls per ticker, so
+> ~190 calls for the 24-name universe, taking about 7 seconds. This section describes the
+> intended design, not current behaviour. See the risk note below before expanding the
+> universe.
+
+The intended efficiency point, which also solves the API budget:
 
 | Data | Changes | Fetch |
 |---|---|---|
-| Price / market cap | daily | **daily** |
-| Revenue growth, margins, ROIC | quarterly | **weekly** (Sunday) |
-| Forward EPS estimates | slowly | **weekly** (Sunday) |
+| Price / market cap | daily | **every run** |
+| Revenue growth, margins, ROIC | quarterly | **at most weekly** |
+| Forward EPS estimates | slowly | **at most weekly** |
 
-Only price genuinely moves day to day, and price only enters the model through Forward P/E. So the
-daily job is a **single batched quote call**; the heavy fundamentals pull happens once a week.
+Only price genuinely moves day to day, and price only enters the model through Forward P/E.
+So a run should be a **single batched quote call** unless the cached fundamentals are more
+than a week old.
 
-Fundamentals are cached to `%LOCALAPPDATA%\AJZ\cache\` so a failed weekly pull degrades to
-"yesterday's fundamentals + today's prices" rather than to nothing.
+Fundamentals would cache to `%LOCALAPPDATA%\AJZ\cache\`, so a failed pull degrades to
+"last week's fundamentals + today's prices" rather than to nothing.
+
+**Why this matters more now than it did.** Under the old 6am schedule the run count was
+fixed at one per day. On demand (§3.3a) it is however many times Jeff clicks — five clicks
+is ~950 calls. At 24 tickers that is comfortable on any paid tier; at 50 tickers with a
+habit of clicking it becomes the binding constraint. Implement the cache before the
+universe grows, not after.
+
+Repeated clicking is otherwise safe: `history.record_snapshot` is idempotent by
+`(date, ticker)`, so re-running on the same day overwrites rather than duplicating and
+cannot corrupt the series.
 
 ---
 

@@ -24,13 +24,9 @@ judgement call and stays hand-entered — the refresh preserves it.
 That is the whole thing. If a third step ever appears here, something has gone wrong with
 the design.
 
-**There is deliberately no background job.** An earlier version registered a 6am
-scheduled task. `schtasks` skips a run outright when the machine is off, asleep, or on
-battery and never catches up, so a PC that sleeps overnight would have refreshed exactly
-never while still looking installed — and an unattended run cannot report its own absence,
-because the status banner is written by the refresh itself. Running on demand deletes that
-whole class of silent failure: the person clicking is present to see what happened.
-[`docs/DEPLOY.md`](docs/DEPLOY.md) has the full reasoning and the trade-off it costs.
+**There is deliberately no background job.** A 6am scheduled task was tried and removed:
+it failed silently whenever the PC was off, and an unattended run cannot report its own
+absence. Reasoning in [spec §3.3a](docs/AJZ_SPEC.md).
 
 ## For whoever maintains it
 
@@ -94,12 +90,10 @@ workbook is safe to send to anyone.
 
 ## Known limits
 
-Tested on Windows CI: the full suite, and that the frozen binary starts. **Not** tested
-anywhere: that PowerShell creates the `.lnk` on a real machine, that the registry Desktop
-lookup returns the right folder under OneDrive redirection, and that a workbook locked
-open by Excel behaves as expected. The unit tests assert we build the right command, not
-that Windows accepts it — so the first real install is still the real test.
+The tests assert we build the right command, not that Windows accepts it. So three things
+are still unverified until the first real install: that PowerShell creates the `.lnk`,
+that the registry Desktop lookup handles OneDrive redirection, and that a workbook locked
+open by Excel behaves as expected.
 
-The difference from the previous design is that these failures are now *visible*. Setup
-and refresh both run in front of someone who is waiting, and anything that goes wrong
-prints a sentence they can read out. Nothing here can fail silently for weeks.
+They will fail *visibly* though — setup and refresh both run in front of someone waiting,
+and print a sentence they can read out. Nothing here fails silently.
