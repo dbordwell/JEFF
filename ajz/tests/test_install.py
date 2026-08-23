@@ -333,16 +333,36 @@ def test_bundled_key_falls_back_to_a_build_time_baked_config(tmp_path, monkeypat
 # --- Where the shortcut lands -----------------------------------------------------------
 
 
-def test_desktop_falls_back_sensibly_when_there_is_no_registry(tmp_path, monkeypatch):
-    """Off Windows there is no winreg, and the fallback must still give a real directory."""
+def test_desktop_prefers_the_registry_over_guessing(tmp_path, monkeypatch):
+    """OneDrive Desktop backup moves the real Desktop, and ~/Desktop may still exist.
+
+    Guessing would put the shortcut in the stale folder, so setup would look like it had
+    silently done nothing. The registry follows the redirection; the guess does not.
+    """
+    from ajz.config import desktop_dir
+
+    redirected = tmp_path / "OneDrive" / "Desktop"
+    redirected.mkdir(parents=True)
+    (tmp_path / "Desktop").mkdir()  # the decoy the old code would have picked
+
+    monkeypatch.setattr("ajz.config.sys.platform", "win32")
+    monkeypatch.setattr("ajz.config._desktop_from_registry", lambda: redirected)
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+
+    assert desktop_dir() == redirected
+
+
+def test_desktop_falls_back_when_the_registry_cannot_answer(tmp_path, monkeypatch):
+    """Off Windows there is no winreg at all, and a bad read must not be fatal."""
     from ajz.config import _desktop_from_registry, desktop_dir
 
     if sys.platform != "win32":
         assert _desktop_from_registry() is None
 
+    monkeypatch.setattr("ajz.config._desktop_from_registry", lambda: None)
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-    assert desktop_dir() == tmp_path  # no ~/Desktop exists, so home is the fallback
 
+    assert desktop_dir() == tmp_path  # no ~/Desktop exists, so home is the fallback
     (tmp_path / "Desktop").mkdir()
     assert desktop_dir() == tmp_path / "Desktop"
 
