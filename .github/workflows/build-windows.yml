@@ -43,14 +43,16 @@ jobs:
       - run: uv pip install pyinstaller
 
       - name: Build the executable
-        # --onefile      : one artefact to hand over, nothing to unpack
-        # --noconsole    : no console window flashes on Jeff's screen each morning;
-        #                  all diagnostics go to the log file instead
-        # --name         : matches install.EXE_NAME so the scheduled task path is right
+        # --onefile : one artefact to hand over, nothing to unpack
+        # --name    : matches install.EXE_NAME, so the desktop shortcut's target is right
+        #
+        # Deliberately NOT --noconsole. This is launched by a person who is waiting for
+        # it, so the console IS the feedback: progress, results, and any error stay on
+        # screen where Jeff can read them out over the phone. It was windowed while a
+        # 6am scheduled task existed; that task is gone, and with it the reason to hide.
         run: |
           uv run pyinstaller `
             --onefile `
-            --noconsole `
             --name ajz-refresh `
             --collect-all openpyxl `
             --hidden-import ajz.fmp `
@@ -58,17 +60,15 @@ jobs:
 
       - name: Smoke-test the binary on real Windows
         # The check the macOS test suite structurally cannot make: that the frozen
-        # binary actually starts, and that the install path runs end to end against a
-        # temporary directory. No API key, so this exercises setup, not fetching.
+        # binary actually starts. No API key here, so this exercises startup and the
+        # status path, not fetching.
+        #
+        # A console-subsystem binary runs synchronously and sets $LASTEXITCODE properly,
+        # which a --noconsole build did not — that mismatch previously failed this step
+        # a full second before the binary had finished printing a correct report.
         run: |
-          # --noconsole builds a GUI-subsystem binary: PowerShell does not wait for it and
-          # $LASTEXITCODE is meaningless (it reported failure while the exe was still
-          # printing). Start-Process -Wait -PassThru is the only way to get a real exit
-          # code, and a windowed process has no console to inherit, so stdout goes to a file.
-          $p = Start-Process -FilePath .\dist\ajz-refresh.exe -ArgumentList '--status' `
-                 -Wait -PassThru -RedirectStandardOutput status.txt -RedirectStandardError status.err
-          Get-Content status.txt, status.err
-          if ($p.ExitCode -ne 0) { throw "binary exited $($p.ExitCode)" }
+          .\dist\ajz-refresh.exe --status
+          if ($LASTEXITCODE -ne 0) { throw "binary exited $LASTEXITCODE" }
 
       - uses: actions/upload-artifact@v4
         with:

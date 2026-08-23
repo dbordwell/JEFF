@@ -24,8 +24,14 @@ Explicit consequences, which override convenience at build time:
 - No Power Query. It is unmaintainable by him and it is what broke him the first time.
 - No macro security prompts, no "enable content" banner, no add-ins.
 - No terminal, no Python prompt, no scheduled-task console he can see.
-- **No refresh button.** A button is a thing that can be forgotten, or clicked wrong, or fail
-  silently. The file is simply correct when he opens it. "One-click refresh" becomes zero-click.
+- **One thing to click, and it is the dashboard itself.** ~~No refresh button — the file is
+  simply correct when he opens it; "one-click refresh" becomes zero-click.~~ **Revised
+  2026-08-20 (§3.3a):** zero-click was achieved with a 6am scheduled task, and that task
+  turned out to be the least reliable and least observable part of the system. Clicking
+  the dashboard now refreshes it and opens it, which is what was originally asked for. The
+  fear that drove zero-click — "a button can fail silently" — is inverted in practice: a
+  button fails *loudly*, in front of the person who pressed it. It was the unattended job
+  that failed silently.
 - If something breaks, the *file itself* tells him in plain English on the front sheet. He is never
   expected to read a log.
 
@@ -82,11 +88,37 @@ requirement, not a nice-to-have).
 
 Assume Dave cannot sit at the PC. The installer therefore:
 - unpacks to `%LOCALAPPDATA%\AJZ\` (no admin needed),
-- registers a **user-level** scheduled task via `schtasks` (no admin needed),
 - writes the API key to `%LOCALAPPDATA%\AJZ\config.json` (never into the workbook),
-- places `AJZ Dashboard.xlsx` on the Desktop,
+- places `AJZ Dashboard.xlsx` beside the program, not on the Desktop,
+- puts a single **shortcut** on the Desktop, at the location the registry reports rather
+  than an assumed `~/Desktop` (OneDrive redirection moves it),
 - runs one refresh immediately so the first open already works,
-- prints one line: "Done. Open AJZ Dashboard on your desktop." and exits.
+- prints what it did and exits.
+
+### 3.3a No scheduled task — reversing the zero-click decision
+
+**Decided 2026-08-20, before first handover.** §3.3 originally registered a user-level
+`schtasks` job to refresh at 06:00. It is removed. Three reasons, in order of severity:
+
+1. **`schtasks` skips, it does not defer.** Its defaults leave `StartWhenAvailable` unset
+   and `DisallowStartIfOnBatteries` on. A machine off, asleep, or on battery at 06:00
+   misses the run entirely and never catches up. A home PC that sleeps overnight would
+   have refreshed exactly never, while continuing to look installed.
+2. **An unattended run cannot report its own absence.** §10's banner is written *by* the
+   refresh, so "I never ran" is the single state it structurally cannot express. The
+   workbook would go on asserting *"Data current as of \<install day\>"* indefinitely.
+   The monitor shared a failure mode with the thing it monitored.
+3. **It was unverifiable.** Whether Windows accepts the invocation, and whether the task
+   fires, could not be tested from macOS on a machine we have no access to, by a user who
+   cannot read a log.
+
+Running on demand deletes all three rather than mitigating them. It also removes the
+justification for `--noconsole`: the refresh now runs in front of someone who is waiting,
+so its output *is* the status reporting, and every failure mode above becomes visible at
+the moment it happens.
+
+**Cost, recorded honestly:** history snapshots (§6) only accumulate on runs, so gaps in
+use produce gaps in the series and rank-change alerts sample irregularly. Accepted.
 
 ---
 

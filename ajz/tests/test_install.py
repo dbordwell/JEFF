@@ -6,7 +6,7 @@ and a single injectable `runner`, and everything below asserts on the commands t
 would be issued rather than on their effects.
 
 That is a real limitation and worth naming: these tests prove we construct the right
-schtasks invocation, not that Windows accepts it. A smoke run on a Windows CI runner is
+PowerShell invocation, not that Windows accepts it. A smoke run on a Windows CI runner is
 the check that closes that gap.
 """
 
@@ -18,13 +18,12 @@ import sys
 import pytest
 
 from ajz.install import (
-    DEFAULT_TIME,
     EXE_NAME,
-    TASK_NAME,
+    SHORTCUT_NAME,
     InstallError,
-    _delete_task_command,
     _run,
-    _task_command,
+    _shortcut_command,
+    create_shortcut,
     find_bundled_key,
     install,
     status,
@@ -47,56 +46,85 @@ class FakeRunner:
         return self
 
 
-# --- The scheduled task command -------------------------------------------------------
+# --- There is deliberately no scheduled task -------------------------------------------
 
 
-def test_task_command_creates_a_daily_user_level_task(tmp_path):
-    exe = tmp_path / EXE_NAME
-    command = _task_command(exe, "06:00")
+def test_setup_registers_no_scheduled_task_at_all(tmp_path, monkeypatch):
+    """The load-bearing absence, asserted so it cannot creep back in unnoticed.
 
-    assert command[:2] == ["schtasks", "/Create"]
-    assert "/SC" in command and command[command.index("/SC") + 1] == "DAILY"
-    assert "/ST" in command and command[command.index("/ST") + 1] == "06:00"
-    assert command[command.index("/TN") + 1] == TASK_NAME
+    A 06:00 schtasks job was the original design. It was removed because schtasks skips
+    a run outright when the machine is off, asleep, or on battery and never catches up,
+    because an unattended run cannot tell Jeff it did not happen, and because whether
+    Windows accepts the invocation could not be verified from macOS. On-demand deletes
+    all three problems instead of mitigating them.
 
-
-def test_task_command_requests_no_elevation(tmp_path):
-    """/RU and /RL would force an admin prompt.
-
-    The install has to work with no access to Jeff's PC and no admin rights, and the task
-    must run as him so it can write to his Desktop.
+    Asserted on what setup *executes* rather than on the source text, since the module
+    docstring discusses schtasks at length precisely so this decision stays explained.
     """
-    command = _task_command(tmp_path / EXE_NAME, "06:00")
-    assert "/RU" not in command
-    assert "/RL" not in command
-    assert "SYSTEM" not in " ".join(command)
+    monkeypatch.setattr("ajz.install.is_windows", lambda: True)
+    runner = FakeRunner()
+    install(api_key="k", install_dir=tmp_path / "app", shortcut_dir=tmp_path / "Desktop",
+            source_exe=tmp_path / "x.exe", runner=runner)
+
+    issued = [" ".join(str(part) for part in command) for command in runner.commands]
+    assert not any("schtasks" in command for command in issued)
+    assert any("CreateShortcut" in command for command in issued)
 
 
-def test_task_command_overwrites_on_reinstall(tmp_path):
-    """/F makes reinstalling idempotent instead of failing on an existing task."""
-    assert "/F" in _task_command(tmp_path / EXE_NAME, "06:00")
+# --- The shortcut command ---------------------------------------------------------------
 
 
-def test_task_command_quotes_a_path_containing_spaces(tmp_path):
-    """%LOCALAPPDATA% sits under 'C:\\Users\\...', and Jeff's name may contain a space."""
-    exe = tmp_path / "Program Files" / EXE_NAME
-    command = _task_command(exe, "06:00")
-    target = command[command.index("/TR") + 1]
-    assert target.startswith('"') and target.endswith('"')
+def test_shortcut_command_targets_the_installed_exe(tmp_path):
+    shortcut = tmp_path / SHORTCUT_NAME
+    exe = tmp_path / "app" / EXE_NAME
+    command = _shortcut_command(shortcut, exe, exe.parent)
+
+    assert command[0] == "powershell"
+    assert "-NoProfile" in command and "-NonInteractive" in command
+    script = command[-1]
+    assert "WScript.Shell" in script and "CreateShortcut" in script
+    assert str(exe) in script
+    assert str(shortcut) in script
+    assert script.rstrip().endswith("$s.Save()")
 
 
-def test_delete_command_is_forced_so_it_never_prompts():
-    assert "/F" in _delete_task_command()
+def test_shortcut_command_escapes_a_quote_in_the_path(tmp_path):
+    """A single quote in a Windows username would otherwise break out of the string.
+
+    'C:\\Users\\O'Brien\\Desktop' is a legal path, and unescaped it would terminate the
+    PowerShell literal early and turn the rest of the path into stray commands.
+    """
+    shortcut = tmp_path / "O'Brien" / SHORTCUT_NAME
+    command = _shortcut_command(shortcut, tmp_path / EXE_NAME, tmp_path)
+    assert "O''Brien" in command[-1]
+
+
+def test_shortcut_is_not_attempted_off_windows(tmp_path):
+    """Nothing to create, and it must report that rather than raising."""
+    runner = FakeRunner()
+    path, created = create_shortcut(tmp_path / EXE_NAME, shortcut_dir=tmp_path, runner=runner)
+    assert path == tmp_path / SHORTCUT_NAME
+    if sys.platform != "win32":
+        assert created is False
+        assert runner.commands == []
+
+
+def test_a_failed_shortcut_is_reported_not_raised(tmp_path, monkeypatch):
+    """Setup must still finish: the program is installed even if the icon is missing."""
+    monkeypatch.setattr("ajz.install.is_windows", lambda: True)
+    runner = FakeRunner(returncode=1, stderr="access denied")
+    _, created = create_shortcut(tmp_path / EXE_NAME, shortcut_dir=tmp_path, runner=runner)
+    assert created is False
 
 
 # --- _run error handling --------------------------------------------------------------
 
 
-def test_run_reports_a_missing_schtasks_rather_than_raising():
+def test_run_reports_a_missing_powershell_rather_than_raising():
     def missing(*args, **kwargs):
         raise FileNotFoundError()
 
-    code, output = _run(["schtasks"], runner=missing)
+    code, output = _run(["powershell"], runner=missing)
     assert code == 127 and "not found" in output
 
 
@@ -104,9 +132,9 @@ def test_run_reports_a_timeout_rather_than_hanging_the_install():
     import subprocess
 
     def slow(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="schtasks", timeout=60)
+        raise subprocess.TimeoutExpired(cmd="powershell", timeout=60)
 
-    code, _ = _run(["schtasks"], runner=slow)
+    code, _ = _run(["powershell"], runner=slow)
     assert code == 124
 
 
@@ -148,7 +176,7 @@ def test_install_writes_config_and_reports_paths(tmp_path):
         source_exe=tmp_path / "nonexistent.exe", runner=runner,
     )
     assert (tmp_path / "app" / "config.json").exists()
-    assert report.scheduled_time == DEFAULT_TIME
+    assert report.install_dir == tmp_path / "app"
 
 
 def test_install_without_a_key_fails_with_an_actionable_message(tmp_path):
@@ -166,7 +194,7 @@ def test_install_runs_one_refresh_immediately(tmp_path):
 
 
 def test_a_failing_first_refresh_does_not_fail_the_install(tmp_path):
-    """The schedule must survive a bad morning — tomorrow's run may well succeed."""
+    """The shortcut must survive a bad first run — clicking it later may well succeed."""
     def boom():
         raise RuntimeError("network down")
 
@@ -176,7 +204,7 @@ def test_a_failing_first_refresh_does_not_fail_the_install(tmp_path):
 
 
 def test_install_copies_the_exe_out_of_wherever_it_was_run_from(tmp_path):
-    """The task must point at a stable path — Downloads gets emptied."""
+    """The shortcut must point at a stable path — Downloads gets emptied."""
     source = tmp_path / "Downloads" / "AJZ Setup.exe"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"fake exe")
@@ -197,10 +225,38 @@ def test_install_is_idempotent(tmp_path):
     assert report.exe_path.exists()
 
 
-def test_custom_time_is_honoured(tmp_path):
-    report = install(api_key="k", when="07:30", install_dir=tmp_path,
-                     source_exe=tmp_path / "x.exe", runner=FakeRunner())
-    assert report.scheduled_time == "07:30"
+def test_install_keeps_the_existing_exe_when_it_cannot_be_overwritten(tmp_path, monkeypatch):
+    """Windows will not overwrite a running image.
+
+    Re-running setup while a refresh is in flight raises PermissionError on the copy. An
+    already-installed copy is good enough to carry on with, so setup completes rather
+    than dying with a traceback the user cannot read.
+    """
+    install_dir = tmp_path / "app"
+    install_dir.mkdir()
+    (install_dir / EXE_NAME).write_bytes(b"the running one")
+    source = tmp_path / "AJZ Setup.exe"
+    source.write_bytes(b"the new one")
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr("ajz.install.shutil.copy2", refuse)
+    report = install(api_key="k", install_dir=install_dir, source_exe=source,
+                     runner=FakeRunner())
+    assert report.exe_path.read_bytes() == b"the running one"
+
+
+def test_install_fails_loudly_if_there_is_no_exe_to_fall_back_on(tmp_path, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise PermissionError("in use")
+
+    source = tmp_path / "AJZ Setup.exe"
+    source.write_bytes(b"new")
+    monkeypatch.setattr("ajz.install.shutil.copy2", refuse)
+    with pytest.raises(InstallError, match="Could not copy"):
+        install(api_key="k", install_dir=tmp_path / "app", source_exe=source,
+                runner=FakeRunner())
 
 
 def test_install_summary_is_plain_english(tmp_path):
@@ -208,26 +264,35 @@ def test_install_summary_is_plain_english(tmp_path):
                      source_exe=tmp_path / "x.exe", runner=FakeRunner())
     summary = report.summary()
     assert "installed" in summary.lower()
-    for jargon in ("schtasks", "Traceback", "subprocess", "API"):
+    for jargon in ("schtasks", "powershell", "Traceback", "subprocess", "API"):
         assert jargon not in summary
 
 
 # --- uninstall ------------------------------------------------------------------------
 
 
-def test_uninstall_reports_platform_appropriate_result_rather_than_crashing():
-    # On Windows there is a scheduled task and registry state to tear down, so uninstall
-    # does real work and reports True. Everywhere else there is nothing to remove: it must
-    # report False rather than raise, so the CI smoke run on windows-latest stays green.
-    expected = sys.platform == "win32"
-    assert uninstall(runner=FakeRunner()) is expected
+def test_uninstall_removes_the_shortcut_and_leaves_the_data(tmp_path):
+    shortcut = tmp_path / SHORTCUT_NAME
+    shortcut.write_bytes(b"lnk")
+    workbook = tmp_path / "AJZ Dashboard.xlsx"
+    workbook.write_bytes(b"his scores are in here")
+
+    assert uninstall(shortcut_dir=tmp_path) is True
+    assert not shortcut.exists()
+    assert workbook.read_bytes() == b"his scores are in here"
+
+
+def test_uninstall_on_a_machine_with_no_shortcut_is_not_an_error(tmp_path):
+    """Idempotent: asking twice must not fail the second time."""
+    assert uninstall(shortcut_dir=tmp_path) is True
 
 
 def test_status_reports_what_is_present(tmp_path):
     (tmp_path / "config.json").write_text("{}")
-    result = status(runner=FakeRunner(), install_dir=tmp_path)
+    result = status(install_dir=tmp_path, shortcut_dir=tmp_path)
     assert result["config_present"] is True
     assert result["exe_present"] is False
+    assert result["shortcut_present"] is False
     assert result["install_dir"] == str(tmp_path)
 
 
@@ -263,3 +328,30 @@ def test_bundled_key_falls_back_to_a_build_time_baked_config(tmp_path, monkeypat
     monkeypatch.setattr(sys, "_MEIPASS", str(unpack), raising=False)
 
     assert find_bundled_key() == "baked-in"
+
+
+# --- Where the shortcut lands -----------------------------------------------------------
+
+
+def test_desktop_falls_back_sensibly_when_there_is_no_registry(tmp_path, monkeypatch):
+    """Off Windows there is no winreg, and the fallback must still give a real directory."""
+    from ajz.config import _desktop_from_registry, desktop_dir
+
+    if sys.platform != "win32":
+        assert _desktop_from_registry() is None
+
+    monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
+    assert desktop_dir() == tmp_path  # no ~/Desktop exists, so home is the fallback
+
+    (tmp_path / "Desktop").mkdir()
+    assert desktop_dir() == tmp_path / "Desktop"
+
+
+def test_the_workbook_lives_beside_the_program_not_on_the_desktop(tmp_path):
+    """One clickable thing. A second copy on the Desktop is a stale copy waiting to be
+    opened by mistake, and it would show yesterday's numbers with a confident banner."""
+    report = install(api_key="k", install_dir=tmp_path / "app",
+                     shortcut_dir=tmp_path / "Desktop",
+                     source_exe=tmp_path / "x.exe", runner=FakeRunner())
+    assert report.workbook_path.parent == report.install_dir
+    assert report.shortcut_path.parent != report.workbook_path.parent

@@ -14,6 +14,7 @@ minor annoyance; a refresh that silently blanks his scores is unrecoverable.
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -239,9 +240,14 @@ def atomic_save(wb, path: Path) -> None:
       Jeff opens is always either the old one or the new one, never a partial one.
     * Excel holding the file open on Windows, which makes the replace fail with
       PermissionError. We abort and keep the good file rather than writing around it.
+
+    The temp name carries the process id. A fixed name would be shared by two refreshes
+    running at once, and they would interleave their writes into a single temp file that
+    then gets atomically swapped into place — an atomic swap of a corrupt file. The
+    lock in `lock.py` should stop that happening; this makes it harmless if it ever does.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
+    temp = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
 
     try:
         wb.save(temp)

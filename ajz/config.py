@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ENV_VAR = "AJZ_FMP_API_KEY"
+WORKBOOK_NAME = "AJZ Dashboard.xlsx"
 
 
 class MissingApiKeyError(RuntimeError):
@@ -53,9 +54,48 @@ class Config:
         return f"{self.api_key[:4]}…{self.api_key[-4:]}"
 
 
-def _desktop() -> Path:
+def desktop_dir() -> Path:
+    """The real Desktop, which is not reliably `~/Desktop`.
+
+    With OneDrive's "back up my Desktop" turned on — the default on a lot of consumer
+    Windows installs — the Desktop becomes `%USERPROFILE%\\OneDrive\\Desktop`, and plain
+    `~/Desktop` may not exist at all. Writing the shortcut to `~/Desktop` would put it
+    somewhere Jeff never looks, so setup would appear to have silently done nothing.
+
+    Windows records the true location in the registry and updates it when redirection
+    happens, so ask there first and only then fall back to guessing.
+    """
+    if sys.platform == "win32":
+        from_registry = _desktop_from_registry()
+        if from_registry is not None:
+            return from_registry
     candidate = Path.home() / "Desktop"
     return candidate if candidate.exists() else Path.home()
+
+
+def _desktop_from_registry() -> Path | None:
+    """Read the Desktop location out of HKCU, or None if it cannot be determined.
+
+    `Shell Folders` holds already-expanded paths; `User Shell Folders` holds the
+    authoritative values but may contain `%USERPROFILE%`, hence the expandvars. Trying
+    both costs nothing and covers machines where one is stale.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    explorer = r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+    for subkey in (rf"{explorer}\Shell Folders", rf"{explorer}\User Shell Folders"):
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+                raw, _ = winreg.QueryValueEx(key, "Desktop")
+        except OSError:
+            continue
+        resolved = Path(os.path.expandvars(str(raw)))
+        if resolved.exists():
+            return resolved
+    return None
 
 
 def load_api_key(config_path: Path | None = None) -> str:
@@ -88,7 +128,10 @@ def load(config_path: Path | None = None, workbook_path: Path | None = None) -> 
     base = app_dir()
     return Config(
         api_key=load_api_key(config_path),
-        workbook_path=workbook_path or (_desktop() / "AJZ Dashboard.xlsx"),
+        # The workbook lives beside the program, not on the Desktop. The Desktop gets a
+        # shortcut that refreshes and then opens this file, so there is exactly one thing
+        # to click and no second, stale copy to open by mistake.
+        workbook_path=workbook_path or (base / WORKBOOK_NAME),
         history_path=base / "history.sqlite",
         backup_dir=base / "backups",
         cache_dir=base / "cache",

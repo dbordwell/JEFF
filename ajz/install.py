@@ -1,21 +1,37 @@
 """One-time setup on Jeff's PC (spec §3.3).
 
-    AJZ Setup.exe            install: copy, configure, schedule, run once
-    ajz-refresh --uninstall  remove the scheduled task
+    AJZ Setup.exe            install: copy, configure, put a shortcut on the Desktop
+    ajz-refresh --uninstall  remove the shortcut (all data stays)
     ajz-refresh --status     report what is installed, for Dave
 
 Design constraints, all downstream of "assume no access to the machine and no admin
 rights":
 
 * Installs to %LOCALAPPDATA%\\AJZ — a per-user directory, so no elevation prompt.
-* Registers a USER-level scheduled task via schtasks — again no elevation.
-* Runs one refresh immediately, so Jeff's first open already shows real numbers rather
-  than an empty file that "will fill in tomorrow".
-* Prints one line and exits. Every question it could ask has been answered in advance.
+* Puts a single shortcut on the Desktop. Clicking it refreshes and then opens the
+  dashboard, so there is one thing to click and no stale second copy to open by mistake.
+* Runs one refresh immediately, so the first open already shows real numbers rather than
+  an empty file that "will fill in later".
 
-The Windows-specific work is confined to `_task_command` and `_run`, both of which are
-unit-tested with a fake runner — this file is written on macOS and cannot be executed
-here, so the logic is kept testable even though the platform is not.
+**There is deliberately no scheduled task.** An earlier design registered one with
+`schtasks` to refresh at 06:00 unattended. It was removed, for reasons worth keeping
+written down:
+
+* `schtasks` defaults skip a run entirely if the machine is off, asleep, or on battery
+  at the scheduled time, and never catch up. A home PC that is off overnight would have
+  refreshed exactly never, while still looking installed.
+* Nothing in an unattended run can tell Jeff it did not happen. The status banner is
+  written *by* the refresh, so "I never ran" is the one state it cannot report.
+* Whether Windows accepts our `schtasks` invocation could not be verified from macOS, on
+  a machine we have no access to, by a user who cannot read a log.
+
+Running on demand deletes all three problems rather than mitigating them, and it is what
+was actually asked for: one-click refresh. The person clicking is present to see what
+happened, which is worth more than any amount of self-reporting machinery.
+
+The Windows-specific work is confined to `_shortcut_command` and `_run`, both unit-tested
+with a fake runner — this file is written on macOS and cannot be executed here, so the
+logic is kept testable even though the platform is not.
 """
 
 from __future__ import annotations
@@ -28,13 +44,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import app_dir
+from .config import WORKBOOK_NAME, app_dir, desktop_dir
 
 log = logging.getLogger(__name__)
 
-TASK_NAME = "AJZ Dashboard Refresh"
-DEFAULT_TIME = "06:00"  # after the US close the prior day, before he'd look
 EXE_NAME = "ajz-refresh.exe"
+SHORTCUT_NAME = "AJZ Dashboard.lnk"
 
 
 class InstallError(RuntimeError):
@@ -46,9 +61,8 @@ class InstallReport:
     install_dir: Path
     exe_path: Path
     workbook_path: Path
-    task_name: str
-    scheduled_time: str
-    task_registered: bool
+    shortcut_path: Path
+    shortcut_created: bool
     first_refresh_ok: bool
 
     def summary(self) -> str:
@@ -56,8 +70,8 @@ class InstallReport:
             "AJZ Dashboard installed.",
             f"  program   {self.exe_path}",
             f"  dashboard {self.workbook_path}",
-            f"  schedule  daily at {self.scheduled_time}"
-            + ("" if self.task_registered else "   (NOT registered — see log)"),
+            f"  shortcut  {self.shortcut_path}"
+            + ("" if self.shortcut_created else "   (NOT created — see log)"),
         ]
         if not self.first_refresh_ok:
             lines.append("  note      first refresh did not complete; see the log")
@@ -68,35 +82,28 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
-def desktop_dir() -> Path:
-    candidate = Path.home() / "Desktop"
-    return candidate if candidate.exists() else Path.home()
+def _ps_quote(value: object) -> str:
+    """Quote a value for a PowerShell single-quoted string."""
+    return "'" + str(value).replace("'", "''") + "'"
 
 
-def _task_command(exe_path: Path, when: str, task_name: str = TASK_NAME) -> list[str]:
-    """The schtasks invocation. Split out so it can be asserted on without Windows.
+def _shortcut_command(shortcut_path: Path, target: Path, working_dir: Path) -> list[str]:
+    """The PowerShell that writes a .lnk. Split out so it can be asserted on off-Windows.
 
-    Deliberately omits /RU and /RL: defaulting to the current user at normal integrity
-    is what keeps this installable without an admin prompt. Adding /RU SYSTEM would
-    require elevation and would also run when Jeff is not logged in, which we do not
-    want — the task must be able to write to his Desktop.
+    A .lnk is a binary OLE structure, so it is created through the WScript.Shell COM
+    object rather than written by hand. PowerShell is used because it is present on every
+    supported Windows and needs no extra dependency — pywin32 would mean shipping a much
+    larger binary for this one call.
     """
-    return [
-        "schtasks", "/Create",
-        "/TN", task_name,
-        "/TR", f'"{exe_path}"',
-        "/SC", "DAILY",
-        "/ST", when,
-        "/F",  # overwrite an existing task rather than failing on reinstall
-    ]
-
-
-def _delete_task_command(task_name: str = TASK_NAME) -> list[str]:
-    return ["schtasks", "/Delete", "/TN", task_name, "/F"]
-
-
-def _query_task_command(task_name: str = TASK_NAME) -> list[str]:
-    return ["schtasks", "/Query", "/TN", task_name]
+    script = (
+        f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut({_ps_quote(shortcut_path)}); "
+        f"$s.TargetPath = {_ps_quote(target)}; "
+        f"$s.WorkingDirectory = {_ps_quote(working_dir)}; "
+        f"$s.IconLocation = {_ps_quote(target)}; "
+        "$s.Description = 'Refresh and open the AJZ Dashboard'; "
+        "$s.Save()"
+    )
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
 
 
 def _run(command: list[str], runner=subprocess.run) -> tuple[int, str]:
@@ -108,6 +115,42 @@ def _run(command: list[str], runner=subprocess.run) -> tuple[int, str]:
         return 124, "timed out"
     output = (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
     return result.returncode, output.strip()
+
+
+def create_shortcut(
+    target: Path,
+    *,
+    shortcut_dir: Path | None = None,
+    working_dir: Path | None = None,
+    runner=subprocess.run,
+) -> tuple[Path, bool]:
+    """Put the Desktop shortcut in place. Returns (path, created)."""
+    directory = shortcut_dir or desktop_dir()
+    shortcut_path = directory / SHORTCUT_NAME
+    if not is_windows():
+        log.warning("not Windows — skipping shortcut creation (%s)", sys.platform)
+        return shortcut_path, False
+
+    directory.mkdir(parents=True, exist_ok=True)
+    code, output = _run(
+        _shortcut_command(shortcut_path, target, working_dir or target.parent),
+        runner=runner,
+    )
+    if code != 0:
+        log.error("could not create the desktop shortcut: %s", output)
+        return shortcut_path, False
+    return shortcut_path, True
+
+
+def remove_shortcut(shortcut_dir: Path | None = None) -> bool:
+    """Delete the Desktop shortcut. Data is never touched."""
+    shortcut_path = (shortcut_dir or desktop_dir()) / SHORTCUT_NAME
+    try:
+        shortcut_path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.error("could not remove the shortcut: %s", exc)
+        return False
+    return True
 
 
 def write_config(api_key: str, target_dir: Path | None = None) -> Path:
@@ -172,9 +215,9 @@ def find_bundled_key(bundle_dir: Path | None = None) -> str | None:
 def install(
     api_key: str | None = None,
     *,
-    when: str = DEFAULT_TIME,
     install_dir: Path | None = None,
     workbook_path: Path | None = None,
+    shortcut_dir: Path | None = None,
     source_exe: Path | None = None,
     runner=subprocess.run,
     refresh_now=None,
@@ -182,7 +225,7 @@ def install(
     """Perform the one-time setup. Idempotent: safe to run again over an existing install."""
     install_dir = install_dir or app_dir()
     install_dir.mkdir(parents=True, exist_ok=True)
-    workbook_path = workbook_path or (desktop_dir() / "AJZ Dashboard.xlsx")
+    workbook_path = workbook_path or (install_dir / WORKBOOK_NAME)
 
     api_key = api_key or find_bundled_key()
     if not api_key:
@@ -192,24 +235,29 @@ def install(
         )
     write_config(api_key, install_dir)
 
-    # Copy ourselves into place so the scheduled task points at a stable path rather
-    # than wherever the installer happened to be run from (often Downloads, which Jeff
-    # may later empty).
+    # Copy ourselves into place so the shortcut points at a stable path rather than
+    # wherever the installer happened to be run from (often Downloads, which Jeff may
+    # later empty).
     source = source_exe or Path(sys.executable if getattr(sys, "frozen", False) else sys.argv[0])
     exe_path = install_dir / EXE_NAME
     if source.exists() and source.resolve() != exe_path.resolve():
-        shutil.copy2(source, exe_path)
+        try:
+            shutil.copy2(source, exe_path)
+        except (OSError, shutil.SameFileError) as exc:
+            # Windows refuses to overwrite a running image, so re-running setup while a
+            # refresh is in flight lands here. An existing copy is good enough to keep
+            # going with; without one there is nothing to point a shortcut at.
+            if not exe_path.exists():
+                raise InstallError(
+                    f"Could not copy the program into {install_dir}: {exc}"
+                ) from exc
+            log.warning("kept the existing program; could not overwrite it (%s)", exc)
     elif not exe_path.exists():
         exe_path = source
 
-    task_registered = False
-    if is_windows():
-        code, output = _run(_task_command(exe_path, when), runner=runner)
-        task_registered = code == 0
-        if not task_registered:
-            log.error("could not register the scheduled task: %s", output)
-    else:
-        log.warning("not Windows — skipping scheduled task registration (%s)", sys.platform)
+    shortcut_path, shortcut_created = create_shortcut(
+        exe_path, shortcut_dir=shortcut_dir, working_dir=install_dir, runner=runner
+    )
 
     first_refresh_ok = False
     if refresh_now is not None:
@@ -217,44 +265,33 @@ def install(
             refresh_now()
             first_refresh_ok = True
         except Exception:  # noqa: BLE001 - a failed first run must not fail the install
-            log.exception("first refresh failed; the schedule is still in place")
+            log.exception("first refresh failed; the shortcut is still in place")
 
     return InstallReport(
         install_dir=install_dir,
         exe_path=exe_path,
         workbook_path=workbook_path,
-        task_name=TASK_NAME,
-        scheduled_time=when,
-        task_registered=task_registered,
+        shortcut_path=shortcut_path,
+        shortcut_created=shortcut_created,
         first_refresh_ok=first_refresh_ok,
     )
 
 
-def uninstall(runner=subprocess.run) -> bool:
-    """Remove the scheduled task. Leaves data — history, backups, and the workbook stay.
+def uninstall(shortcut_dir: Path | None = None) -> bool:
+    """Remove the Desktop shortcut. Leaves data — history, backups, and the workbook stay.
 
-    Deleting Jeff's conviction scores because he asked to stop the daily refresh would be
-    a wildly disproportionate response to that request.
+    Deleting Jeff's conviction scores because he asked to stop using the dashboard would
+    be a wildly disproportionate response to that request.
     """
-    if not is_windows():
-        log.warning("not Windows — nothing to unschedule")
-        return False
-    code, output = _run(_delete_task_command(), runner=runner)
-    if code != 0:
-        log.error("could not remove the scheduled task: %s", output)
-    return code == 0
+    return remove_shortcut(shortcut_dir)
 
 
-def status(runner=subprocess.run, install_dir: Path | None = None) -> dict[str, object]:
+def status(install_dir: Path | None = None, shortcut_dir: Path | None = None) -> dict[str, object]:
     """What is actually installed. For Dave when debugging remotely."""
     base = install_dir or app_dir()
     exe_path = base / EXE_NAME
     config_path = base / "config.json"
-
-    scheduled = None
-    if is_windows():
-        code, _ = _run(_query_task_command(), runner=runner)
-        scheduled = code == 0
+    shortcut_path = (shortcut_dir or desktop_dir()) / SHORTCUT_NAME
 
     return {
         "platform": sys.platform,
@@ -262,7 +299,9 @@ def status(runner=subprocess.run, install_dir: Path | None = None) -> dict[str, 
         "install_dir_exists": base.exists(),
         "exe_present": exe_path.exists(),
         "config_present": config_path.exists(),
+        "workbook_present": (base / WORKBOOK_NAME).exists(),
         "history_present": (base / "history.sqlite").exists(),
         "backup_count": len(list((base / "backups").glob("*.xlsx"))) if (base / "backups").exists() else 0,
-        "task_scheduled": scheduled,
+        "desktop_dir": str(shortcut_path.parent),
+        "shortcut_present": shortcut_path.exists(),
     }
