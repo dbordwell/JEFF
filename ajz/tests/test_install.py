@@ -19,12 +19,14 @@ import pytest
 
 from ajz.install import (
     EXE_NAME,
+    LAUNCHER_NAME,
     SHORTCUT_NAME,
     InstallError,
     _run,
     _shortcut_command,
     create_shortcut,
     find_bundled_key,
+    write_launcher_bat,
     install,
     status,
     uninstall,
@@ -109,9 +111,16 @@ def test_shortcut_is_not_attempted_off_windows(tmp_path):
         assert runner.commands == []
 
 
-def test_a_failed_shortcut_is_reported_not_raised(tmp_path, monkeypatch):
-    """Setup must still finish: the program is installed even if the icon is missing."""
+def test_setup_finishes_even_when_nothing_clickable_can_be_made(tmp_path, monkeypatch):
+    """The last resort: report it rather than raise.
+
+    The .lnk failing now falls back to a .bat, so `created is False` means both routes
+    failed — a Desktop we cannot write to at all. Setup still completes and says where
+    the program is, because an installed program with no icon still beats no program.
+    """
     monkeypatch.setattr("ajz.install.is_windows", lambda: True)
+    monkeypatch.setattr("ajz.install.write_launcher_bat", lambda *a, **k: None)
+
     runner = FakeRunner(returncode=1, stderr="access denied")
     _, created = create_shortcut(tmp_path / EXE_NAME, shortcut_dir=tmp_path, runner=runner)
     assert created is False
@@ -431,3 +440,72 @@ def test_reinstalling_creates_one_shortcut_not_two(tmp_path):
         if "CreateShortcut" in command[-1]
     }
     assert len(targets) <= 1, f"more than one shortcut path was written: {targets}"
+
+
+# --- The .bat fallback -------------------------------------------------------------------
+
+
+def test_a_bat_launcher_is_written_when_the_shortcut_cannot_be_made(tmp_path, monkeypatch):
+    """Never leave him with no way to start it.
+
+    A .lnk needs PowerShell plus a COM object, and a locked-down machine can refuse
+    either. On the first real install something in that chain said no, and setup reported
+    "shortcut not created" and left him with nothing clickable. A .bat is a text file:
+    writing one needs only permission to create a file.
+    """
+    monkeypatch.setattr("ajz.install.is_windows", lambda: True)
+    desktop = tmp_path / "Desktop"
+    exe = tmp_path / "app" / EXE_NAME
+
+    path, created = create_shortcut(
+        exe, shortcut_dir=desktop, runner=FakeRunner(returncode=1, stderr="COM refused")
+    )
+
+    assert created is True, "setup must still hand him something that launches"
+    assert path.name == LAUNCHER_NAME
+    assert str(exe) in path.read_text(encoding="cp437")
+
+
+def test_the_bat_survives_a_powershell_that_lies_about_succeeding(tmp_path, monkeypatch):
+    """Exit 0 is not proof. Existence is.
+
+    PowerShell can return success having created nothing at all, so the .lnk is checked
+    for on disk rather than trusted.
+    """
+    monkeypatch.setattr("ajz.install.is_windows", lambda: True)
+    desktop = tmp_path / "Desktop"
+
+    path, created = create_shortcut(
+        tmp_path / "app" / EXE_NAME, shortcut_dir=desktop, runner=FakeRunner(returncode=0)
+    )
+
+    assert created is True
+    assert path.name == LAUNCHER_NAME
+
+
+def test_the_bat_is_written_for_cmd_not_for_a_modern_text_stack(tmp_path):
+    """cmd.exe parses this, so it needs CRLF line endings."""
+    path = write_launcher_bat(tmp_path / "app" / EXE_NAME, tmp_path)
+    raw = path.read_bytes()
+    assert raw.startswith(b"@echo off\r\n")
+    assert b"\n" in raw and raw.count(b"\r\n") == raw.count(b"\n")
+
+
+def test_uninstall_removes_the_bat_as_well_as_the_shortcut(tmp_path):
+    (tmp_path / SHORTCUT_NAME).write_bytes(b"lnk")
+    (tmp_path / LAUNCHER_NAME).write_bytes(b"bat")
+
+    assert uninstall(shortcut_dir=tmp_path) is True
+    assert not (tmp_path / SHORTCUT_NAME).exists()
+    assert not (tmp_path / LAUNCHER_NAME).exists()
+
+
+def test_status_reports_either_way_of_launching(tmp_path):
+    result = status(install_dir=tmp_path, shortcut_dir=tmp_path)
+    assert result["can_launch_from_desktop"] is False
+
+    (tmp_path / LAUNCHER_NAME).write_bytes(b"bat")
+    result = status(install_dir=tmp_path, shortcut_dir=tmp_path)
+    assert result["shortcut_present"] is False
+    assert result["bat_launcher_present"] is True
+    assert result["can_launch_from_desktop"] is True

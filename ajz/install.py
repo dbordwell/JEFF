@@ -50,6 +50,7 @@ log = logging.getLogger(__name__)
 
 EXE_NAME = "ajz-refresh.exe"
 SHORTCUT_NAME = "AJZ Dashboard.lnk"
+LAUNCHER_NAME = "AJZ Dashboard.bat"
 
 
 class InstallError(RuntimeError):
@@ -70,12 +71,17 @@ class InstallReport:
             "AJZ Dashboard installed.",
             f"  program   {self.exe_path}",
             f"  dashboard {self.workbook_path}",
-            f"  shortcut  {self.shortcut_path}"
-            + ("" if self.shortcut_created else "   (NOT created — see log)"),
+            f"  desktop   {self.shortcut_path}"
+            + ("" if self.shortcut_created else "   (COULD NOT BE CREATED — see log)"),
         ]
         if not self.first_refresh_ok:
             lines.append("  note      first refresh did not complete; see the log")
         return "\n".join(lines)
+
+    @property
+    def launcher_is_a_bat(self) -> bool:
+        """True when the .lnk could not be made and a .bat stood in for it."""
+        return self.shortcut_path.suffix.lower() == ".bat"
 
 
 def is_windows() -> bool:
@@ -117,6 +123,38 @@ def _run(command: list[str], runner=subprocess.run) -> tuple[int, str]:
     return result.returncode, output.strip()
 
 
+def write_launcher_bat(target: Path, shortcut_dir: Path | None = None) -> Path | None:
+    """Write a .bat that runs the program. The fallback when a .lnk cannot be made.
+
+    A .lnk is a binary OLE structure, so creating one needs PowerShell and a COM object
+    — and both can be unavailable: constrained language mode, an execution policy, or a
+    locked-down machine will refuse `New-Object -ComObject`. On the first real install,
+    something in that chain said no.
+
+    A .bat is a text file. Writing one needs nothing but permission to create a file in
+    the folder, so it works where the shortcut cannot. It looks slightly less polished
+    and shows a console window, which this program shows anyway.
+
+    Never leave him with no way to launch it — that is the whole point.
+    """
+    directory = shortcut_dir or desktop_dir()
+    path = directory / LAUNCHER_NAME
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # CRLF and cp437: .bat is parsed by cmd.exe, not by a modern text stack.
+        path.write_text(
+            "@echo off\r\n"
+            "rem Opens the AJZ Dashboard with the latest numbers.\r\n"
+            f'"{target}"\r\n',
+            encoding="cp437",
+            newline="",
+        )
+    except (OSError, UnicodeEncodeError) as exc:
+        log.error("could not write the .bat launcher either: %s", exc)
+        return None
+    return path
+
+
 def create_shortcut(
     target: Path,
     *,
@@ -124,7 +162,11 @@ def create_shortcut(
     working_dir: Path | None = None,
     runner=subprocess.run,
 ) -> tuple[Path, bool]:
-    """Put the Desktop shortcut in place. Returns (path, created)."""
+    """Put something clickable on the Desktop. Returns (path, created).
+
+    Tries a proper .lnk first and falls back to a .bat, so a machine that refuses COM
+    still ends up with a working icon rather than an apology.
+    """
     directory = shortcut_dir or desktop_dir()
     shortcut_path = directory / SHORTCUT_NAME
     if not is_windows():
@@ -136,21 +178,29 @@ def create_shortcut(
         _shortcut_command(shortcut_path, target, working_dir or target.parent),
         runner=runner,
     )
-    if code != 0:
-        log.error("could not create the desktop shortcut: %s", output)
+    if code == 0 and shortcut_path.exists():
+        return shortcut_path, True
+
+    # PowerShell can exit 0 having quietly created nothing, so existence is the test.
+    log.error("could not create the desktop shortcut (exit %s): %s", code, output)
+    fallback = write_launcher_bat(target, directory)
+    if fallback is None:
         return shortcut_path, False
-    return shortcut_path, True
+    log.warning("wrote %s instead of a shortcut", fallback)
+    return fallback, True
 
 
 def remove_shortcut(shortcut_dir: Path | None = None) -> bool:
-    """Delete the Desktop shortcut. Data is never touched."""
-    shortcut_path = (shortcut_dir or desktop_dir()) / SHORTCUT_NAME
-    try:
-        shortcut_path.unlink(missing_ok=True)
-    except OSError as exc:
-        log.error("could not remove the shortcut: %s", exc)
-        return False
-    return True
+    """Delete whatever we put on the Desktop — .lnk, .bat, or both. Data is untouched."""
+    directory = shortcut_dir or desktop_dir()
+    ok = True
+    for name in (SHORTCUT_NAME, LAUNCHER_NAME):
+        try:
+            (directory / name).unlink(missing_ok=True)
+        except OSError as exc:
+            log.error("could not remove %s: %s", name, exc)
+            ok = False
+    return ok
 
 
 def write_config(api_key: str, target_dir: Path | None = None) -> Path:
@@ -291,7 +341,9 @@ def status(install_dir: Path | None = None, shortcut_dir: Path | None = None) ->
     base = install_dir or app_dir()
     exe_path = base / EXE_NAME
     config_path = base / "config.json"
-    shortcut_path = (shortcut_dir or desktop_dir()) / SHORTCUT_NAME
+    desktop = shortcut_dir or desktop_dir()
+    lnk = desktop / SHORTCUT_NAME
+    bat = desktop / LAUNCHER_NAME
 
     return {
         "platform": sys.platform,
@@ -302,6 +354,8 @@ def status(install_dir: Path | None = None, shortcut_dir: Path | None = None) ->
         "workbook_present": (base / WORKBOOK_NAME).exists(),
         "history_present": (base / "history.sqlite").exists(),
         "backup_count": len(list((base / "backups").glob("*.xlsx"))) if (base / "backups").exists() else 0,
-        "desktop_dir": str(shortcut_path.parent),
-        "shortcut_present": shortcut_path.exists(),
+        "desktop_dir": str(desktop),
+        "shortcut_present": lnk.exists(),
+        "bat_launcher_present": bat.exists(),
+        "can_launch_from_desktop": lnk.exists() or bat.exists(),
     }

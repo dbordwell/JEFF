@@ -252,9 +252,14 @@ def _do_install(args) -> int:
     if report.shortcut_created:
         emit("\nDone. Open 'AJZ Dashboard' on your desktop whenever you want the "
              "latest numbers — it refreshes and opens in one click.")
+        if report.launcher_is_a_bat:
+            # Worth one line: the icon is a plain white document rather than the
+            # program's icon, which otherwise looks like the wrong thing got installed.
+            emit("(This PC would not let us make a normal shortcut, so it is a small "
+                 "batch file. It works exactly the same, it just looks plainer.)")
     else:
-        emit(f"\nDone, but the desktop shortcut could not be created. The program is at:"
-             f"\n  {report.exe_path}")
+        emit(f"\nDone, but nothing could be placed on your desktop. You can still run it "
+             f"from here:\n  {report.exe_path}")
     return 0
 
 
