@@ -84,8 +84,12 @@ jobs:
         run: |
           '{ "fmp_api_key": "ci-not-a-real-key" }' | Set-Content -Path dist\config.json -Encoding ascii
 
-          .\dist\ajz-refresh.exe --install
-          if ($LASTEXITCODE -ne 0) { throw "install exited $LASTEXITCODE" }
+          # NO --install flag. A double-click cannot pass one, so this is the gesture the
+          # instructions actually describe. Testing `--install` here is what let the real
+          # first install fail while this job stayed green: it ran a refresh, said "not set
+          # up yet", and closed too fast to read.
+          .\dist\ajz-refresh.exe
+          if ($LASTEXITCODE -ne 0) { throw "double-clicking the setup file exited $LASTEXITCODE" }
 
           $status = .\dist\ajz-refresh.exe --status | Out-String
           Write-Host $status

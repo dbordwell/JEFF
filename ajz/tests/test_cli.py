@@ -8,6 +8,8 @@ when the refresh failed, and that nothing shouts jargon at him.
 from __future__ import annotations
 
 import sys
+
+import pytest
 from pathlib import Path
 
 from ajz import cli
@@ -87,3 +89,95 @@ def test_an_unconfigured_copy_says_so_in_plain_english(monkeypatch, capsys):
     assert "set up" in output.lower()
     for jargon in ("Traceback", "MissingApiKeyError", "fmp_api_key"):
         assert jargon not in output
+
+
+# --- The double-click path ---------------------------------------------------------------
+
+
+def test_double_clicking_before_setup_installs_rather_than_failing(tmp_path, monkeypatch):
+    """The gesture every instruction we wrote depends on.
+
+    A double-click passes no arguments. Installing used to require --install, so
+    double-clicking the downloaded setup file ran a *refresh*, which failed with "not set
+    up yet" and vanished — and could never succeed, because refresh only looks for the key
+    in %LOCALAPPDATA%, never beside the exe where the user was told to put it.
+
+    This is the bug that broke the first real install, and it survived a Windows CI test
+    of the installer because that test typed --install explicitly.
+    """
+    monkeypatch.setattr(cli, "_is_set_up", lambda: False)
+    chosen = []
+    monkeypatch.setattr(cli, "_do_install", lambda args: chosen.append("install") or 0)
+    monkeypatch.setattr(cli, "_do_refresh", lambda args: chosen.append("refresh") or 0)
+
+    cli._main([])
+    assert chosen == ["install"]
+
+
+def test_double_clicking_after_setup_refreshes(tmp_path, monkeypatch):
+    """Once installed, the same gesture must mean "give me current numbers"."""
+    monkeypatch.setattr(cli, "_is_set_up", lambda: True)
+    chosen = []
+    monkeypatch.setattr(cli, "_do_install", lambda args: chosen.append("install") or 0)
+    monkeypatch.setattr(cli, "_do_refresh", lambda args: chosen.append("refresh") or 0)
+
+    cli._main([])
+    assert chosen == ["refresh"]
+
+
+def test_set_up_is_judged_by_the_installed_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("AJZ_FMP_API_KEY", raising=False)
+    monkeypatch.setattr("ajz.config.app_dir", lambda: tmp_path)
+    assert cli._is_set_up() is False
+
+    (tmp_path / "config.json").write_text('{"fmp_api_key": "k"}')
+    assert cli._is_set_up() is True
+
+
+def test_an_environment_key_counts_as_set_up(tmp_path, monkeypatch):
+    monkeypatch.setenv("AJZ_FMP_API_KEY", "from-the-environment")
+    monkeypatch.setattr("ajz.config.app_dir", lambda: tmp_path)
+    assert cli._is_set_up() is True
+
+
+# --- The window that vanished ------------------------------------------------------------
+
+
+def test_a_failure_holds_the_window_open(monkeypatch):
+    """"It flashes so quickly I think it says something about the key."
+
+    Windows destroys the console the moment the process exits, so the one line telling
+    him what went wrong was unreadable. An error nobody can read is not an error message.
+    """
+    monkeypatch.setattr(cli.sys, "stdin", _Tty())
+    waited = []
+    monkeypatch.setattr("builtins.input", lambda prompt="": waited.append(prompt))
+
+    assert cli._hold_window_open(2) == 2
+    assert waited, "a failing run must stay on screen"
+
+
+def test_success_does_not_make_him_press_a_key(monkeypatch):
+    """A good refresh opens Excel and gets out of the way."""
+    monkeypatch.setattr(cli.sys, "stdin", _Tty())
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("should not pause"))
+
+    assert cli._hold_window_open(0) == 0
+
+
+def test_no_pause_when_there_is_no_console_to_hold(monkeypatch):
+    """Scripts and CI must never block waiting for a keypress that will never come."""
+    monkeypatch.setattr(cli.sys, "stdin", _NotATty())
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("should not pause"))
+
+    assert cli._hold_window_open(2) == 2
+
+
+class _Tty:
+    def isatty(self):
+        return True
+
+
+class _NotATty:
+    def isatty(self):
+        return False

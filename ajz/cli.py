@@ -76,7 +76,30 @@ def open_workbook(path: Path) -> bool:
     return True
 
 
+def _hold_window_open(code: int) -> int:
+    """Keep a double-clicked console window on screen when something went wrong.
+
+    Windows destroys the console the instant the process exits, so a failure message
+    appears for a fraction of a second and is gone — which is exactly how the first real
+    install failed: "it flashes so quickly I think it says something about the key".
+    An error nobody can read is the same as no error at all.
+
+    Only on failure: a successful refresh opens Excel and should get out of the way.
+    """
+    if code == 0 or not sys.stdin or not sys.stdin.isatty():
+        return code
+    try:
+        input("\nPress Enter to close this window...")
+    except (EOFError, KeyboardInterrupt, OSError):
+        pass
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
+    return _hold_window_open(_main(argv))
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ajz-refresh", description=__doc__)
     parser.add_argument("--out", type=Path, help="workbook path override")
     parser.add_argument("--dry-run", action="store_true", help="fetch and score, write nothing")
@@ -105,10 +128,26 @@ def main(argv: list[str] | None = None) -> int:
         emit("Your dashboard, conviction scores and history were left in place.")
         return 0 if ok else 1
 
-    if args.install:
+    # A double-click cannot pass a flag, so the no-argument path has to be whichever
+    # action makes sense on this machine. Before setup that is "install"; after it,
+    # "refresh". Requiring --install meant double-clicking the downloaded setup file
+    # ran a refresh instead, which failed with "not set up yet" and closed instantly —
+    # and could never succeed, because refresh only looks for the key in
+    # %LOCALAPPDATA%, never beside the exe. Every instruction we wrote said
+    # "double-click it", so that is what has to work.
+    if args.install or not _is_set_up():
         return _do_install(args)
 
     return _do_refresh(args)
+
+
+def _is_set_up() -> bool:
+    """Has setup run on this machine? Judged by the key it installs."""
+    from .config import ENV_VAR, app_dir
+
+    if os.environ.get(ENV_VAR, "").strip():
+        return True
+    return (app_dir() / "config.json").exists()
 
 
 def _do_refresh(args) -> int:
@@ -198,7 +237,9 @@ def _do_install(args) -> int:
         report = install(
             api_key=args.key,
             workbook_path=args.out,
-            refresh_now=lambda: main(
+            # _main, not main: the inner refresh must not pause for an Enter keypress
+            # in the middle of setup.
+            refresh_now=lambda: _main(
                 (["--out", str(args.out)] if args.out else []) + ["--no-open"]
             ),
         )
