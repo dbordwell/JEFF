@@ -70,6 +70,38 @@ jobs:
           .\dist\ajz-refresh.exe --status
           if ($LASTEXITCODE -ne 0) { throw "binary exited $LASTEXITCODE" }
 
+      - name: Install end-to-end on real Windows
+        # The gap the macOS suite structurally cannot close. The unit tests prove we
+        # build the right PowerShell command; only this proves Windows accepts it.
+        #
+        # Covers, for real: that PowerShell creates the .lnk, that the registry Desktop
+        # lookup returns a usable folder, that the exe copies into %LOCALAPPDATA%, and
+        # that config.json is found beside the exe (the --onefile _MEIPASS bug).
+        #
+        # A fake key is enough: FMP answers 401, which raises without retrying, so the
+        # first refresh fails fast, install completes regardless (by design), and every
+        # step up to the network boundary is exercised on a real machine.
+        run: |
+          '{ "fmp_api_key": "ci-not-a-real-key" }' | Set-Content -Path dist\config.json -Encoding ascii
+
+          .\dist\ajz-refresh.exe --install
+          if ($LASTEXITCODE -ne 0) { throw "install exited $LASTEXITCODE" }
+
+          $status = .\dist\ajz-refresh.exe --status | Out-String
+          Write-Host $status
+          if ($status -notmatch 'exe_present\s+True')       { throw "the program was not copied into place" }
+          if ($status -notmatch 'config_present\s+True')    { throw "config.json beside the exe was not picked up" }
+          if ($status -notmatch 'shortcut_present\s+True')  { throw "no desktop shortcut was created" }
+
+          $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'AJZ Dashboard.lnk'
+          if (-not (Test-Path $lnk)) { throw "shortcut missing at $lnk" }
+
+          # Resolve the .lnk back through COM and confirm it points at the installed exe,
+          # not at wherever setup happened to be run from (Downloads gets emptied).
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+          Write-Host "shortcut target: $target"
+          if ($target -notlike '*\AJZ\ajz-refresh.exe') { throw "shortcut points at $target" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: ajz-refresh-windows

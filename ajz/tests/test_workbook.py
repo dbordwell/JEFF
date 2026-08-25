@@ -208,3 +208,24 @@ def test_empty_universe_still_produces_a_valid_workbook(stocks):
     build_workbook([]).save(buffer)
     buffer.seek(0)
     assert load_workbook(buffer).sheetnames == EXPECTED_SHEETS
+
+
+def test_unscored_conviction_uses_the_same_words_as_the_rankings_category(saved):
+    """One state, one name.
+
+    The Conviction sheet said "Not scored" while Top Rankings said "Needs Conviction"
+    for the same stock. Jeff was told to look for "Needs Conviction", went to the
+    Conviction sheet as instructed, did not find the phrase, and reported it missing.
+    An empty field described two ways reads as a broken feature, not an empty field.
+    """
+    from ajz.models import Category
+
+    ws = saved["Conviction"]
+    labels = {
+        row[8].value
+        for row in ws.iter_rows(min_row=2)
+        if row[7].value in (None, "—")
+    }
+    assert labels, "fixture has no unscored stocks, so this would assert nothing"
+    assert "Not scored" not in labels
+    assert labels <= {Category.UNSCORED.value}

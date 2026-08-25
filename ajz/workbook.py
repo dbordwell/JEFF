@@ -389,7 +389,12 @@ def _build_conviction(ws: Worksheet, stocks: list[ScoredStock]) -> None:
         total = ws.cell(row=row, column=8, value=s.conviction_score or "—")
         _style_body(total, bold=True, align="center")
 
-        rating = ws.cell(row=row, column=9, value=s.conviction_rating or "Not scored")
+        # Same words as the Category column on Top Rankings. They described the same
+        # state in two ways ("Not scored" here, "Needs Conviction" there), so being told
+        # to look for one and finding the other read as a missing feature rather than an
+        # empty field. Jeff hit this on the first open.
+        rating = ws.cell(row=row, column=9,
+                         value=s.conviction_rating or Category.UNSCORED.value)
         _style_body(rating, align="center",
                     ink=theme.CONVICTION_BAND_INK.get(s.conviction_rating, theme.INK_MUTED))
         if s.conviction_rating and theme.CONVICTION_BAND_FILL.get(s.conviction_rating):
