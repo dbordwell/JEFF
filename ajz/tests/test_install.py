@@ -101,14 +101,22 @@ def test_shortcut_command_escapes_a_quote_in_the_path(tmp_path):
     assert "O''Brien" in command[-1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="describes the non-Windows path")
 def test_shortcut_is_not_attempted_off_windows(tmp_path):
-    """Nothing to create, and it must report that rather than raising."""
+    """Nothing to create, and it must report that rather than raising.
+
+    Scoped to non-Windows deliberately. On Windows this same call reaches the real
+    fallback logic — the FakeRunner reports success without producing a .lnk, so a .bat
+    is written and a different path comes back. That is correct behaviour, and asserting
+    the .lnk path unconditionally made this fail on the Windows runner.
+    """
     runner = FakeRunner()
     path, created = create_shortcut(tmp_path / EXE_NAME, shortcut_dir=tmp_path, runner=runner)
+
     assert path == tmp_path / SHORTCUT_NAME
-    if sys.platform != "win32":
-        assert created is False
-        assert runner.commands == []
+    assert created is False
+    assert runner.commands == []
+    assert not (tmp_path / LAUNCHER_NAME).exists(), "no .bat on a platform with no Desktop"
 
 
 def test_setup_finishes_even_when_nothing_clickable_can_be_made(tmp_path, monkeypatch):
