@@ -375,3 +375,59 @@ def test_the_workbook_lives_beside_the_program_not_on_the_desktop(tmp_path):
                      source_exe=tmp_path / "x.exe", runner=FakeRunner())
     assert report.workbook_path.parent == report.install_dir
     assert report.shortcut_path.parent != report.workbook_path.parent
+
+
+# --- Reinstalling over an existing install -----------------------------------------------
+
+
+def test_reinstalling_preserves_everything_he_has_typed(tmp_path):
+    """Upgrading is just running the new setup over the old one.
+
+    Nothing versioned is written, so there is no second copy to conflict with: the exe is
+    overwritten in place, config.json is rewritten with the same key, and the shortcut has
+    a fixed name so it replaces rather than duplicates.
+
+    What must survive is everything that is *his*: the workbook holding hand-entered
+    conviction scores, the history series, and the backups. Setup never deletes; the
+    refresh it triggers reads the existing workbook as the system of record.
+    """
+    install_dir = tmp_path / "app"
+    install_dir.mkdir()
+    workbook = install_dir / "AJZ Dashboard.xlsx"
+    workbook.write_bytes(b"his conviction scores live here")
+    history = install_dir / "history.sqlite"
+    history.write_bytes(b"the whole series")
+    backups = install_dir / "backups"
+    backups.mkdir()
+    (backups / "2026-08-24.xlsx").write_bytes(b"yesterday")
+
+    source = tmp_path / "AJZ Setup.exe"
+    source.write_bytes(b"v1.1.1")
+
+    for _ in range(2):  # twice: upgrading must be as safe as installing
+        install(api_key="k", install_dir=install_dir, shortcut_dir=tmp_path / "Desktop",
+                source_exe=source, runner=FakeRunner())
+
+    assert workbook.read_bytes() == b"his conviction scores live here"
+    assert history.read_bytes() == b"the whole series"
+    assert (backups / "2026-08-24.xlsx").read_bytes() == b"yesterday"
+    assert (install_dir / EXE_NAME).read_bytes() == b"v1.1.1"
+
+
+def test_reinstalling_creates_one_shortcut_not_two(tmp_path):
+    """The shortcut name is fixed, so a second setup replaces it in place."""
+    desktop = tmp_path / "Desktop"
+    source = tmp_path / "AJZ Setup.exe"
+    source.write_bytes(b"exe")
+
+    runner = FakeRunner()
+    for _ in range(3):
+        install(api_key="k", install_dir=tmp_path / "app", shortcut_dir=desktop,
+                source_exe=source, runner=runner)
+
+    targets = {
+        command[-1].split("CreateShortcut(")[1].split(")")[0]
+        for command in runner.commands
+        if "CreateShortcut" in command[-1]
+    }
+    assert len(targets) <= 1, f"more than one shortcut path was written: {targets}"

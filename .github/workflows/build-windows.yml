@@ -102,6 +102,31 @@ jobs:
           Write-Host "shortcut target: $target"
           if ($target -notlike '*\AJZ\ajz-refresh.exe') { throw "shortcut points at $target" }
 
+      - name: Upgrade over the existing install
+        # Shipping a new version means running the new setup over the old one, so the
+        # upgrade path is the install path run twice. Nothing is versioned - the exe is
+        # overwritten in place and the shortcut has a fixed name - so this proves there
+        # is no second copy, no duplicate icon, and nothing of his is deleted.
+        run: |
+          $appDir = Join-Path $env:LOCALAPPDATA 'AJZ'
+          Set-Content -Path (Join-Path $appDir 'history.sqlite') -Value 'the whole series' -Encoding ascii
+          New-Item -ItemType Directory -Force -Path (Join-Path $appDir 'backups') | Out-Null
+          Set-Content -Path (Join-Path $appDir 'backups\2026-08-24.xlsx') -Value 'yesterday' -Encoding ascii
+
+          .\dist\ajz-refresh.exe --install
+          if ($LASTEXITCODE -ne 0) { throw "reinstall exited $LASTEXITCODE" }
+
+          if ((Get-Content (Join-Path $appDir 'history.sqlite')) -ne 'the whole series') {
+            throw "the history series was not preserved across an upgrade"
+          }
+          if ((Get-Content (Join-Path $appDir 'backups\2026-08-24.xlsx')) -ne 'yesterday') {
+            throw "backups were not preserved across an upgrade"
+          }
+
+          $icons = @(Get-ChildItem ([Environment]::GetFolderPath('Desktop')) -Filter 'AJZ Dashboard*.lnk')
+          Write-Host "desktop icons after upgrade: $($icons.Count)"
+          if ($icons.Count -ne 1) { throw "expected exactly one shortcut, found $($icons.Count)" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: ajz-refresh-windows
