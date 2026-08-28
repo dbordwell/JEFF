@@ -1,6 +1,33 @@
 # AJZ Dashboard — Build Spec v1
 
-**Status:** Built and green on CI. Remaining: first real install. · **Written:** 2026-08-19 · **Owner:** Dave · **User:** Jeff
+**Status:** Shipped as v1.1.0, then superseded in part by v2.0.0. · **Written:** 2026-08-19 · **Owner:** Dave · **User:** Jeff
+
+> ## ⚠ Superseded in part by v2.0.0 (2026-08-28)
+>
+> Jeff's *Requested Changes for Items 2.1* removed Conviction entirely — "it doesn't do
+> anything and is subject to interpretation" — and replaced the fixed band thresholds
+> with three category tables he owns and edits.
+>
+> **Read this document as the record of v1, not as a description of what runs now.**
+> Everything below about Conviction, the Opportunity Matrix quadrants, and the hardcoded
+> AJZ rating bands describes a version that has been replaced. It is kept rather than
+> rewritten because the reasoning is still the reason: §7 explains why five hand-entered
+> scores per stock was a load-bearing weakness, and Jeff reaching the same conclusion
+> from the other direction is the most useful thing in this file.
+>
+> What changed, and what is true now:
+>
+> | v1 (below) | v2.0 |
+> |---|---|
+> | Conviction: five 1–5 scores per stock | Removed. Archived on upgrade, never regenerated. |
+> | Opportunity Matrix: AJZ Value × Conviction 2×2 | Columns by AJZ Value category (his Primary Screen) |
+> | Rating bands hardcoded in `calc.py` | Three editable tables in `bands.py`, surfaced on Settings |
+> | Alerts: value AND conviction | Value only; movement alerts use his 25% / 10% rules |
+> | Movers: rank places (never wired up) | % change in Score and Forward P/E, plus category crossings |
+> | Dashboard: eleven KPI tiles | Emptied at his request; status banner retained |
+>
+> See [FOR_JEFF.md](FOR_JEFF.md) for the user-facing version and
+> [DEPLOY.md](DEPLOY.md#upgrading-to-v20) for what happens on upgrade.
 
 This spec replaces `Spec Files/AJZ_Dashboard_v5.1 (1).xlsx` and the Copilot chat plans entirely.
 Those are kept as *evidence and methodology source*, not as a starting point.

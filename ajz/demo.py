@@ -31,7 +31,7 @@ def main() -> int:
     print(f"  {len(stocks)} stocks, {len(ranked)} rankable")
     for s in sorted(ranked, key=lambda x: -x.ajz_value_score)[:5]:
         print(f"  {s.ticker:6} value={s.ajz_value_score:6.2f}  "
-              f"{s.ajz_rating:10} conv={s.conviction_score}  {s.category.value}")
+              f"{s.score_label or '—':<14}{s.pe_label or '—':<18}{s.value_label or '—'}")
     return 0
 
 

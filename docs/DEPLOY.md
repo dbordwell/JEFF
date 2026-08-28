@@ -27,7 +27,7 @@ the file-locking and path bugs macOS cannot.
 login. A release asset downloads from a plain link with no sign-in:
 
 ```
-gh release upload v1.1.0 AJZ-Setup.exe --repo dbordwell/JEFF --clobber
+gh release upload v2.0.0 AJZ-Setup.exe --repo dbordwell/JEFF --clobber
 ```
 
 **3. Send the key separately.** The repo is public, so `config.json` cannot ship with the
@@ -82,12 +82,35 @@ ajz-refresh --uninstall   remove the desktop shortcut, keep all data
 ```
 
 To stop using it, Jeff can just delete the shortcut — there is no background process.
-`--uninstall` deliberately leaves the workbook, conviction scores, history and backups:
-deleting his hand-entered scores because he stopped using the dashboard would be
-wildly disproportionate.
+`--uninstall` deliberately leaves the workbook, his settings, history and backups:
+deleting his universe and his category tables because he stopped using the dashboard
+would be wildly disproportionate.
 
 If he has OneDrive, putting the workbook in a synced folder gives Dave a live copy to
 inspect without asking him for anything.
+
+## Upgrading to v2.0
+
+v2.0 is the first release that **removes** a sheet. Jeff asked for Conviction to go
+("it doesn't do anything and is subject to interpretation"), and it takes the Opportunity
+Matrix's second axis and half of every alert rule with it.
+
+He upgrades the same way he installed: run the new setup over the old install. No manual
+step, nothing to migrate, and his Universe and Settings edits carry across untouched.
+
+One thing happens automatically and only once. His five conviction scores — NVDA 24,
+TSM 25, AVGO 23, BE 18, HOOD 18 — were hand-entered judgements no API can regenerate, so
+the first post-upgrade refresh copies the Conviction sheet to:
+
+```
+%LOCALAPPDATA%\AJZ\AJZ Dashboard - conviction scores (archived).xlsx
+```
+
+before dropping it, and says so in the run output. It is kept outside `backups\`
+deliberately: backups prune at thirty, so the scores would have survived a month of
+refreshes and then vanished. If he ever asks for conviction back, the numbers are there.
+
+Verified end to end against his real handover workbook, not a fixture.
 
 ## Exit codes
 
@@ -99,9 +122,9 @@ inspect without asking him for anything.
 | 4 | open in Excel | untouched, told to close and click again |
 | 5 | another refresh running | untouched |
 
-Code 3 matters most: if we cannot prove what conviction scores he had, we do not
-overwrite them. A refresh that does not happen is an annoyance; one that blanks his
-scores is unrecoverable.
+Code 3 matters most: if we cannot prove what he had typed, we do not overwrite it. A
+refresh that does not happen is an annoyance; one that blanks his universe or his
+category tables is unrecoverable.
 
 ## Not yet verified
 

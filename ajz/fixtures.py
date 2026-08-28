@@ -1,6 +1,6 @@
 """Sample data for developing and demoing the workbook without an API (spec §12, Phase 2).
 
-The tickers, conviction scores, and rough AJZ Value Scores come from Jeff's own Copilot
+The tickers and rough AJZ Value Scores come from Jeff's own Copilot
 chats, so the generated file is immediately recognisable to him. The underlying
 fundamentals are PLAUSIBLE, NOT REAL — they are back-solved to land near the AJZ Value
 Scores he was shown, so the dashboard reads correctly in a demo.
@@ -13,12 +13,15 @@ from __future__ import annotations
 from datetime import date
 
 from .calc import score_stock
-from .models import Conviction, PEBasis, ScoredStock, StockData
+from .models import PEBasis, ScoredStock, StockData
 
 AS_OF = date(2026, 8, 19)
 
 # ticker, company, sector, rev growth %, gross margin %, fcf margin %, roic %, fwd P/E,
-# and Jeff's five conviction scores where his chats recorded them.
+# The trailing tuple is a legacy conviction score, retained only so the seed rows
+# still read as they did in his chats; nothing consumes it since v2.1 removed
+# conviction. It is left in place rather than stripped so the numbers stay
+# traceable to the source they came from.
 _SEED: list[tuple] = [
     ("NVDA", "NVIDIA Corporation", "Technology", 114.0, 75.0, 45.0, 90.0, 22.6, (4, 5, 5, 5, 5)),
     ("TSM", "Taiwan Semiconductor", "Technology", 36.0, 56.0, 28.0, 32.0, 18.5, (5, 5, 5, 5, 5)),
@@ -48,11 +51,11 @@ def sample_stocks() -> list[ScoredStock]:
     Edge cases included on purpose:
       * RIVN  — loss-making, no forward P/E -> Not Rated, excluded from every average.
       * SNOW  — missing ROIC -> no AJZ Score at all, with a note explaining which field.
-      * NET   — fundamentals fine, conviction unscored -> Needs Conviction, ranked but
-                kept out of the Opportunity Matrix.
+      * NET   — very high P/E, so it ranks last and lands in the bottom value band
+                rather than being dropped.
     """
     out: list[ScoredStock] = []
-    for ticker, company, sector, growth, gm, fcf, roic, pe, conv in _SEED:
+    for ticker, company, sector, growth, gm, fcf, roic, pe, _legacy in _SEED:
         data = StockData(
             ticker=ticker,
             company=company,
@@ -66,19 +69,5 @@ def sample_stocks() -> list[ScoredStock]:
             as_of=AS_OF,
             source="fixtures",
         )
-        conviction = Conviction(*conv) if conv else Conviction()
-        out.append(score_stock(data, conviction))
+        out.append(score_stock(data))
     return out
-
-
-def sample_conviction() -> dict[str, Conviction]:
-    """Jeff's own conviction scores, keyed by ticker (spec §12, Phase 6).
-
-    These come from his Copilot chats — NVDA 24, TSM 25, AVGO 23, BE 18, HOOD 18. Used
-    to seed a first run so he opens something useful rather than an empty grid.
-    """
-    return {
-        row[0]: Conviction(*row[8])
-        for row in _SEED
-        if row[8] is not None
-    }

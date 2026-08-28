@@ -27,9 +27,12 @@ CREATE TABLE IF NOT EXISTS snapshots (
     ticker          TEXT NOT NULL,
     ajz_score       REAL,
     ajz_value_score REAL,
-    conviction      INTEGER,
+    conviction      INTEGER,   -- legacy; always NULL since v2.1 removed conviction.
+                               -- Kept so existing history files open without migration:
+                               -- an unused column is cheaper than a schema upgrade that
+                               -- could fail on Jeff's machine with nobody there to fix it.
     rank            INTEGER,
-    category        TEXT,
+    category        TEXT,      -- now the Primary Screen band ("Generational", "Fair"...)
     PRIMARY KEY (snapshot_date, ticker)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_ticker ON snapshots(ticker, snapshot_date);
@@ -79,9 +82,9 @@ class History:
                 s.ticker,
                 s.ajz_score,
                 s.ajz_value_score,
-                s.conviction_score,
+                None,
                 position,
-                s.category.value,
+                s.value_label,
             )
             for position, s in enumerate(ranked, start=1)
         ]
@@ -104,6 +107,48 @@ class History:
                 "SELECT DISTINCT snapshot_date FROM snapshots ORDER BY snapshot_date DESC"
             )
             return [date.fromisoformat(r[0]) for r in cur.fetchall()]
+
+    def previous_metrics(self, before: date) -> dict[str, tuple[float | None, float | None, str | None]]:
+        """(ajz_score, ajz_value_score, band) per ticker from the last prior snapshot.
+
+        Feeds the Movers sheet, which Jeff respecified in v2.1 as movement in the numbers
+        rather than movement in the rankings: "an alert for anything where the AJZ Score
+        has moved more than 25% or the forward P/E has moved more than 10%". Both are
+        derivable from what we already store, so this needs no schema change.
+
+        Returns {} when there is no prior snapshot — the first-run case, which is normal
+        and must not be reported as "nothing has moved" when the truth is "we have
+        nothing to compare against yet". The caller distinguishes the two.
+        """
+        with closing(self._connect()) as conn:
+            cur = conn.execute(
+                "SELECT snapshot_date FROM snapshots WHERE snapshot_date < ? "
+                "ORDER BY snapshot_date DESC LIMIT 1",
+                (before.isoformat(),),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return {}
+            cur = conn.execute(
+                "SELECT ticker, ajz_score, ajz_value_score, category FROM snapshots "
+                "WHERE snapshot_date = ?", (row[0],)
+            )
+            return {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
+    def has_prior_snapshot(self, before: date) -> bool:
+        """Whether there is anything to compare against.
+
+        Jeff asked for a note saying "no movers" when nothing has moved. That note would
+        be a lie on the first run, where the truth is that we have no baseline yet — and
+        a dashboard that says "nothing moved" when it means "I cannot tell" is exactly
+        the class of quiet wrongness this rewrite exists to remove.
+        """
+        with closing(self._connect()) as conn:
+            cur = conn.execute(
+                "SELECT 1 FROM snapshots WHERE snapshot_date < ? LIMIT 1",
+                (before.isoformat(),),
+            )
+            return cur.fetchone() is not None
 
     def previous_ranks(self, before: date) -> dict[str, int]:
         """Ranks from the most recent snapshot strictly before `before`.

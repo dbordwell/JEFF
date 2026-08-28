@@ -42,48 +42,53 @@ NEUTRAL_FILL = _argb("f0efec")
 HEADER_FILL = _argb("0d366b")  # sequential blue step 700, for table headers
 RULE = _argb("d8d7d2")
 
-# --- 1. Sequential ramp: AJZ rating bands --------------------------------------------
+# --- 1. Sequential ramp: category bands ----------------------------------------------
 # Blue 450 -> 100, then a neutral tail. Dark to light == best to worst, so rank is
 # legible without reading the word. Text colour flips on the darkest step only.
-AJZ_BAND_FILL: dict[str, str] = {
-    "Elite": _argb("2a78d6"),  # step 450
-    "Excellent": _argb("6da7ec"),  # step 300
-    "Strong": _argb("9ec5f4"),  # step 200
-    "Good": _argb("cde2fb"),  # step 100
-    "Fair": NEUTRAL_FILL,
-    "Weak": None,  # no fill: the worst band should recede, not shout
-}
+#
+# Keyed by POSITION, not by label. Jeff owns the band names now and demonstrably changes
+# them ("Fair" -> "Fair to Poor" between v2.0 and v2.1), and he owns how many there are
+# (v2.1 added two). A palette keyed on the words would silently lose its colour the first
+# time he retyped one, and would mis-colour the rest: his "Elite" is the second band of
+# seven, where the old label-keyed map had "Elite" as the best of six. Position is the
+# only thing about a band that we still define.
+_RAMP: tuple[tuple[str | None, str], ...] = (
+    (_argb("2a78d6"), INK_INVERSE),    # step 450
+    (_argb("6da7ec"), INK_PRIMARY),    # step 300
+    (_argb("9ec5f4"), INK_PRIMARY),    # step 200
+    (_argb("cde2fb"), INK_PRIMARY),    # step 100
+    (NEUTRAL_FILL, INK_SECONDARY),
+    (None, INK_MUTED),                 # no fill: the worst band recedes, never shouts
+)
 
-AJZ_BAND_INK: dict[str, str] = {
-    "Elite": INK_INVERSE,
-    "Excellent": INK_PRIMARY,
-    "Strong": INK_PRIMARY,
-    "Good": INK_PRIMARY,
-    "Fair": INK_SECONDARY,
-    "Weak": INK_MUTED,
-}
 
-# Conviction bands reuse the same ramp. Same job (ordinal magnitude), same encoding —
-# and reusing it means Jeff learns one visual language, not two.
-CONVICTION_BAND_FILL: dict[str, str] = {
-    "Very High": _argb("2a78d6"),
-    "High": _argb("9ec5f4"),
-    "Medium": _argb("cde2fb"),
-    "Low": NEUTRAL_FILL,
-}
+def band_style(index: int, total: int) -> tuple[str | None, str]:
+    """(fill, ink) for the band at `index` of `total`, best first.
 
-CONVICTION_BAND_INK: dict[str, str] = {
-    "Very High": INK_INVERSE,
-    "High": INK_PRIMARY,
-    "Medium": INK_PRIMARY,
-    "Low": INK_SECONDARY,
-}
+    Any number of bands is stretched across the six ramp steps, so a five-band table and
+    a nine-band table both read best-to-worst at a glance. The label is always in the
+    cell as well: colour adds speed here and never carries meaning alone, which matters
+    because roughly one man in twelve cannot separate the warm end of a ramp reliably.
+    """
+    if total <= 1:
+        return _RAMP[0]
+    step = round(index * (len(_RAMP) - 1) / (total - 1))
+    return _RAMP[min(step, len(_RAMP) - 1)]
+
+
 
 # --- 2. Status palette (reserved; never used for categories) --------------------------
 STATUS_GOOD = _argb("0ca30c")
 STATUS_WARNING = _argb("fab219")
 STATUS_SERIOUS = _argb("ec835a")
 STATUS_CRITICAL = _argb("d03b3b")
+
+# Direction of travel on the Movers sheet. Deliberately the muted status inks rather than
+# a saturated red/green pair: a stock moving is news, not an emergency, and the sheet
+# would otherwise read as a wall of alarm on any volatile week. The sign is always in the
+# text of the cell too, so the colour is never the only thing carrying the direction.
+INK_POSITIVE = _argb("0a7d0a")
+INK_NEGATIVE = _argb("b03030")
 
 ALERT_FILL: dict[str, str] = {
     "BUY": STATUS_GOOD,
@@ -99,28 +104,6 @@ ALERT_INK: dict[str, str] = {
     "WARNING": INK_PRIMARY,  # warning is sub-3:1 on light; dark ink + label is the fix
     "DOWNGRADE": INK_PRIMARY,
     "EXIT": INK_INVERSE,
-}
-
-# --- 3. Categorical: Opportunity Matrix buckets ---------------------------------------
-# Fixed slot order from the reference palette: 1 blue, 2 orange, 3 aqua, 4 yellow.
-# Every cell carries its text label, which is the required relief for the yellow/orange
-# pairing and for the sub-3:1 light-surface slots.
-CATEGORY_FILL: dict[str, str] = {
-    "Core Holding": _argb("2a78d6"),  # slot 1
-    "Aggressive Position": _argb("eb6834"),  # slot 2
-    "Defensive Compounder": _argb("1baf7a"),  # slot 3
-    "Needs Conviction": _argb("eda100"),  # slot 4 — an action item, not a verdict
-    "Avoid": NEUTRAL_FILL,  # recessive; status-red is reserved
-    "Not Rated": None,
-}
-
-CATEGORY_INK: dict[str, str] = {
-    "Core Holding": INK_INVERSE,
-    "Aggressive Position": INK_INVERSE,
-    "Defensive Compounder": INK_INVERSE,
-    "Needs Conviction": INK_PRIMARY,
-    "Avoid": INK_SECONDARY,
-    "Not Rated": INK_MUTED,
 }
 
 # --- Banner (spec §10) ----------------------------------------------------------------

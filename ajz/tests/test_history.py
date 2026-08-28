@@ -8,11 +8,10 @@ import pytest
 
 from ajz.calc import rank_stocks, score_stock
 from ajz.history import History
-from ajz.models import Conviction, PEBasis, StockData
+from ajz.models import PEBasis, StockData
 
 WEEK_1 = date(2026, 8, 12)
 WEEK_2 = date(2026, 8, 19)
-FULL = Conviction(5, 5, 5, 5, 5)
 
 
 def make(ticker: str, pe: float):
@@ -21,8 +20,7 @@ def make(ticker: str, pe: float):
         StockData(
             ticker=ticker, revenue_growth=50.0, gross_margin=70.0, fcf_margin=40.0,
             roic=60.0, pe_ratio=pe, pe_basis=PEBasis.FORWARD,
-        ),
-        FULL,
+        )
     )
 
 
@@ -105,8 +103,39 @@ def test_unrankable_stocks_never_enter_history(store):
     """Only ranked rows are snapshotted, so history cannot inherit the v5.1 zero-rows bug."""
     loss_maker = score_stock(
         StockData(ticker="RIVN", revenue_growth=10.0, gross_margin=-5.0,
-                  fcf_margin=-20.0, roic=-8.0),
-        FULL,
+                  fcf_margin=-20.0, roic=-8.0)
     )
     assert store.record_snapshot(rank_stocks([make("A", 10), loss_maker]), WEEK_1) == 1
     assert "RIVN" not in store.previous_ranks(WEEK_2)
+
+
+# --- Movement, which is what the Movers sheet actually needs ---------------------------
+
+
+def test_previous_metrics_returns_score_value_and_band(store):
+    store.record_snapshot(rank_stocks([make("A", 10)]), WEEK_1)
+    metrics = store.previous_metrics(WEEK_2)
+    score, value, band = metrics["A"]
+    assert score == pytest.approx(240.0)
+    assert value == pytest.approx(24.0)
+    assert band == "Generational"
+
+
+def test_forward_pe_is_recoverable_from_what_we_already_store(store):
+    """Jeff's 10% forward-P/E rule needs no schema change: P/E is Score / Value Score."""
+    store.record_snapshot(rank_stocks([make("A", 10)]), WEEK_1)
+    score, value, _ = store.previous_metrics(WEEK_2)["A"]
+    assert score / value == pytest.approx(10.0)
+
+
+def test_no_baseline_is_distinguishable_from_nothing_having_moved(store):
+    """The Movers sheet says different things in these two cases, so the store has to
+    tell them apart. "Nothing moved" on a first run would be a claim we cannot make."""
+    assert store.has_prior_snapshot(WEEK_1) is False
+    store.record_snapshot(rank_stocks([make("A", 10)]), WEEK_1)
+    assert store.has_prior_snapshot(WEEK_2) is True
+
+
+def test_previous_metrics_is_empty_when_there_is_no_prior_snapshot(store):
+    store.record_snapshot(rank_stocks([make("A", 10)]), WEEK_1)
+    assert store.previous_metrics(WEEK_1) == {}

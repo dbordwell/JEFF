@@ -18,9 +18,9 @@ from ajz.workbook import build_workbook
 
 EXPECTED_SHEETS = [
     "Dashboard", "Top Rankings", "Opportunity Matrix",
-    "Alerts", "Movers", "Conviction", "Universe", "Settings",
+    "Alerts", "Movers", "Universe", "Settings",
 ]
-EDITABLE_SHEETS = {"Conviction", "Universe", "Settings"}
+EDITABLE_SHEETS = {"Universe", "Settings"}
 
 
 @pytest.fixture(scope="module")
@@ -41,19 +41,38 @@ def test_has_exactly_the_expected_sheets(saved):
     assert saved.sheetnames == EXPECTED_SHEETS
 
 
-def test_workbook_contains_no_formulas(saved):
+def test_no_reported_value_comes_from_a_formula(saved):
     """REGRESSION (v5.1): the workbook was formula-driven and could go #REF!.
 
-    Every value here is computed in Python and written as a static value, so nothing
-    recalculates behind Jeff and nothing can break when he sorts or edits.
+    Every number Jeff reads is computed in Python and written as a static value, so
+    nothing recalculates behind him and nothing breaks when he sorts or edits.
+
+    The one exception, added in v2.1, is the "Range (automatic)" column on the Settings
+    sheet — and it is an exception to the letter of this rule rather than its point. That
+    column displays the band boundaries implied by the floors he types, live, as he types
+    them. Nothing reads it back: classification uses the floors. If the formula broke he
+    would lose a hint, not a number. v5.1's formulas computed the numbers themselves,
+    which is what made #REF! a data-loss event rather than a cosmetic one.
     """
     offenders = []
     for ws in saved.worksheets:
         for row in ws.iter_rows():
             for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    offenders.append(f"{ws.title}!{cell.coordinate}={cell.value}")
+                if not isinstance(cell.value, str) or not cell.value.startswith("="):
+                    continue
+                if ws.title == "Settings" and cell.column == 3:
+                    continue
+                offenders.append(f"{ws.title}!{cell.coordinate}={cell.value}")
     assert offenders == [], f"formulas found: {offenders}"
+
+
+def test_the_settings_range_column_is_locked_so_he_cannot_break_it(saved):
+    """He is meant to edit the floors beside it, and those cells are adjacent."""
+    ws = saved["Settings"]
+    formulas = [c for row in ws.iter_rows() for c in row
+                if isinstance(c.value, str) and c.value.startswith("=")]
+    assert formulas, "the Range column wrote no formulas at all"
+    assert all(c.protection.locked is not False for c in formulas)
 
 
 def test_display_sheets_are_protected(saved):
@@ -62,22 +81,47 @@ def test_display_sheets_are_protected(saved):
             assert saved[name].protection.sheet is True, f"{name} is not protected"
 
 
-def test_conviction_score_cells_are_unlocked(saved):
-    """Protection is on for the sheet, but the five score columns must be typeable."""
-    ws = saved["Conviction"]
-    for col in range(3, 8):  # the five 1-5 columns
-        assert ws.cell(row=2, column=col).protection.locked is False
+def _band_row(ws, attr, offset=0):
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row=row, column=4).value == f"table:{attr}":
+            return row + 2 + offset
+    raise AssertionError(f"table:{attr} not found")
 
 
-def test_conviction_sheet_has_1_to_5_validation(saved):
-    """A typo must be refused at entry, not silently corrupt a score."""
-    ws = saved["Conviction"]
-    validations = ws.data_validations.dataValidation
-    assert validations, "no data validation on the Conviction sheet"
-    whole = [v for v in validations if v.type == "whole"]
-    assert whole, "no whole-number validation found"
-    assert whole[0].formula1 == "1"
-    assert whole[0].formula2 == "5"
+def test_band_name_and_floor_cells_are_unlocked(saved):
+    """Protection is on for the sheet, but his category tables must be typeable."""
+    ws = saved["Settings"]
+    row = _band_row(ws, "score_bands")
+    assert ws.cell(row=row, column=1).protection.locked is False
+    assert ws.cell(row=row, column=2).protection.locked is False
+
+
+def test_every_table_ships_blank_spare_rows_so_he_can_add_a_category(saved):
+    """Excel refuses to insert a row into a protected sheet. Without spares, "add a
+    band" is impossible in the file rather than merely awkward — and he demonstrably
+    adds bands: v2.0 -> v2.1 added two."""
+    from ajz.settings import BAND_TABLES, SPARE_BAND_ROWS
+
+    ws = saved["Settings"]
+    for attr, _title, default in BAND_TABLES:
+        first = _band_row(ws, attr)
+        spares = 0
+        for offset in range(len(default.bands), len(default.bands) + SPARE_BAND_ROWS):
+            cell = ws.cell(row=first + offset, column=1)
+            assert cell.value is None
+            assert cell.protection.locked is False
+            spares += 1
+        assert spares == SPARE_BAND_ROWS
+
+
+def test_settings_tables_are_delimited_so_spare_rows_stay_spares(saved):
+    """A blank row must not be mistaken for the end of a table, or a band typed into the
+    second spare would be silently dropped."""
+    from ajz.settings import BAND_TABLES
+
+    ws = saved["Settings"]
+    markers = [ws.cell(row=r, column=4).value for r in range(2, ws.max_row + 1)]
+    assert markers.count("table:end") == len(BAND_TABLES)
 
 
 def test_universe_active_column_is_a_yes_no_list(saved):
@@ -109,7 +153,7 @@ def test_ranked_stocks_are_in_descending_value_order(saved):
     for r in range(2, ws.max_row + 1):
         if ws.cell(row=r, column=1).value == "—":
             break
-        values.append(ws.cell(row=r, column=6).value)
+        values.append(ws.cell(row=r, column=9).value)   # AJZ Value moved to column I
     assert values == sorted(values, reverse=True)
 
 
@@ -129,11 +173,18 @@ def test_notes_explain_why_a_stock_could_not_be_scored(saved):
     assert "roic" in note.lower()
 
 
-def test_unscored_conviction_is_flagged_not_treated_as_zero(saved):
-    """NET has fundamentals but no conviction: 'Needs Conviction', not 'Avoid'."""
+def test_an_expensive_stock_is_categorised_not_dropped(saved):
+    """NET has sound fundamentals and a punishing P/E. It must land in the bottom band
+    with a word for it, not vanish and not read as a data failure.
+
+    This test used to assert NET showed "Needs Conviction" — a state that existed only
+    because we required a hand-entered score before anything could be classified. With
+    conviction gone there is no such limbo: everything the API returns is categorised.
+    """
     ws = saved["Top Rankings"]
     rows = {ws.cell(row=r, column=2).value: r for r in range(2, ws.max_row + 1)}
-    assert ws.cell(row=rows["NET"], column=10).value == "Needs Conviction"
+    assert ws.cell(row=rows["NET"], column=10).value == "Expensive"
+    assert ws.cell(row=rows["NET"], column=8).value == "Bubble"
 
 
 # --- Status banner ------------------------------------------------------------------
@@ -191,15 +242,18 @@ def test_partial_refresh_lists_the_missing_tickers(stocks):
 # --- Dashboard KPIs -----------------------------------------------------------------
 
 
-def test_dashboard_shows_dash_not_zero_when_index_is_uncomputable(stocks):
-    """REGRESSION (v5.1): an empty workbook proudly displayed a Quality Index of 25."""
-    buffer = BytesIO()
-    build_workbook([]).save(buffer)
-    buffer.seek(0)
-    ws = load_workbook(buffer)["Dashboard"]
-    labels = {ws.cell(row=r, column=2).value: r for r in range(1, ws.max_row + 1)}
-    row = labels["Portfolio Quality Index"]
-    assert ws.cell(row=row, column=3).value == "—"
+def test_the_dashboard_is_emptied_but_still_carries_the_status_banner(saved):
+    """Jeff, v2.1: "I would eliminate the data but leave the sheet for future use."
+
+    The banner stays. It is not data in the sense he meant — it is the whole
+    error-reporting surface, the one place that says whether these numbers arrived today
+    or are three days stale. Removing it would leave a silent failure nowhere to appear.
+    """
+    ws = saved["Dashboard"]
+    text = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
+    assert "Portfolio Quality Index" not in text
+    assert "Average AJZ Value" not in text
+    assert "reserved for a future" in text
 
 
 def test_empty_universe_still_produces_a_valid_workbook(stocks):
@@ -210,22 +264,32 @@ def test_empty_universe_still_produces_a_valid_workbook(stocks):
     assert load_workbook(buffer).sheetnames == EXPECTED_SHEETS
 
 
-def test_unscored_conviction_uses_the_same_words_as_the_rankings_category(saved):
-    """One state, one name.
+def test_every_ranked_row_carries_all_three_category_words(saved):
+    """Jeff's v2.1 layout: each number is followed by the word for it, so he reads across
+    a row instead of back and forth to a legend."""
+    ws = saved["Top Rankings"]
+    headers = [ws.cell(row=1, column=c).value for c in range(1, 13)]
+    assert headers[4:10] == ["AJZ Score", "Score Category", "Forward P/E",
+                             "P/E Category", "AJZ Value", "Value Category"]
 
-    The Conviction sheet said "Not scored" while Top Rankings said "Needs Conviction"
-    for the same stock. Jeff was told to look for "Needs Conviction", went to the
-    Conviction sheet as instructed, did not find the phrase, and reported it missing.
-    An empty field described two ways reads as a broken feature, not an empty field.
+    for row in range(2, ws.max_row + 1):
+        if ws.cell(row=row, column=1).value == "—":
+            continue   # unrankable rows legitimately have no Value category
+        for col in (6, 8, 10):
+            assert ws.cell(row=row, column=col).value not in (None, ""), \
+                f"row {row} column {col} has no category word"
+
+
+def test_no_conviction_survives_anywhere_in_the_file(saved):
+    """Jeff: "Get Rid Of Conviction Calculation and references to same throughout."
+
+    "Throughout" included a sheet, two columns, four Opportunity Matrix buckets and half
+    of every alert rule. A leftover mention is a promise the rest of the file breaks.
     """
-    from ajz.models import Category
-
-    ws = saved["Conviction"]
-    labels = {
-        row[8].value
-        for row in ws.iter_rows(min_row=2)
-        if row[7].value in (None, "—")
-    }
-    assert labels, "fixture has no unscored stocks, so this would assert nothing"
-    assert "Not scored" not in labels
-    assert labels <= {Category.UNSCORED.value}
+    assert "Conviction" not in saved.sheetnames
+    for ws in saved.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    assert "onviction" not in cell.value, \
+                        f"{ws.title}!{cell.coordinate}: {cell.value!r}"

@@ -6,7 +6,7 @@ v5.1 failed in his hands:
 * **Every cell is a static value.** No formulas, no cross-sheet references. Nothing in
   the file can go #REF!, and nothing recalculates behind him. The generator is the only
   thing that computes.
-* **Only two sheets are editable** — Conviction and Universe. The rest are protected, so
+* **Only two sheets are editable** — Universe and Settings. The rest are protected, so
   he cannot accidentally type over his own dashboard.
 * **Data validation on every score cell**, so a typo is refused at entry rather than
   silently corrupting a conviction score.
@@ -24,15 +24,18 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import theme
-from .calc import (
-    average_ajz_value,
-    average_conviction,
-    portfolio_quality_index,
-    rank_stocks,
+from . import __version__, theme
+from .bands import BandTable
+from .calc import rank_stocks
+from .models import ScoredStock
+from .settings import (
+    BAND_TABLES,
+    DEFAULT_THRESHOLDS,
+    SPARE_BAND_ROWS,
+    TABLE_END,
+    TABLE_PREFIX,
+    Thresholds,
 )
-from .models import Category, Conviction, ScoredStock
-from .settings import DEFAULT_THRESHOLDS, Thresholds
 from .status import RefreshStatus
 
 THIN = Side(style="thin", color=theme.RULE)
@@ -109,52 +112,40 @@ def _build_dashboard(ws: Worksheet, stocks: list[ScoredStock], status: RefreshSt
         note.alignment = Alignment(horizontal="left", vertical="center", indent=1)
         row = 6
 
-    # --- KPI tiles. Hero numbers, not charts: each answers one question at a glance.
-    rankable = [s for s in stocks if s.is_rankable]
-    counts = {c: sum(1 for s in stocks if s.category is c) for c in Category}
-
-    tiles: list[tuple[str, object, str]] = [
-        ("Portfolio Quality Index", portfolio_quality_index(stocks), "0.0"),
-        ("Average AJZ Value Score", average_ajz_value(stocks), "0.00"),
-        ("Average Conviction", average_conviction(stocks), "0.0"),
-        ("Stocks ranked", len(rankable), "0"),
-        ("Core Holdings", counts[Category.CORE_HOLDING], "0"),
-        ("Aggressive Positions", counts[Category.AGGRESSIVE], "0"),
-        ("Defensive Compounders", counts[Category.DEFENSIVE], "0"),
-        ("Buy alerts", sum(1 for s in stocks if any(a.value == "BUY" for a in s.alerts)), "0"),
-        ("Warning alerts", sum(1 for s in stocks if any(a.value == "WARNING" for a in s.alerts)), "0"),
-        ("Awaiting your conviction scores", counts[Category.UNSCORED], "0"),
-        ("Not rated (no usable P/E)", counts[Category.NOT_RATED], "0"),
-    ]
+    # --- Deliberately empty below this line.
+    #
+    # Jeff, v2.1: "I don't think the dashboard does anything at this point. Maybe someday
+    # it could be a pie chart summary of portfolio. I would eliminate the data but leave
+    # the sheet for future use."
+    #
+    # So the tiles are gone and the sheet stays. What remains is the status banner above,
+    # which is not "data" in the sense he meant -- it is the entire error-reporting
+    # surface (spec §10), the one place that says whether the numbers he is about to read
+    # arrived today or are three days stale. Deleting it would leave a silent failure
+    # with nowhere to appear, which is how v5.1 managed to show zeros for months.
+    row += 2
+    placeholder = ws.cell(
+        row=row, column=2,
+        value="This sheet is reserved for a future portfolio summary.",
+    )
+    placeholder.font = Font(name=theme.FONT, size=11, italic=True, color=theme.INK_MUTED)
+    ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
 
     row += 2
-    for label, value, fmt in tiles:
-        label_cell = ws.cell(row=row, column=2, value=label)
-        label_cell.font = Font(name=theme.FONT, size=11, color=theme.INK_SECONDARY)
-        label_cell.alignment = Alignment(vertical="center")
-
-        # None is rendered as an em-dash, never as 0. v5.1's Portfolio Quality Index
-        # displayed a confident "25" on an empty workbook because two of its four
-        # components were hardcoded constants.
-        value_cell = ws.cell(row=row, column=3, value=value if value is not None else "—")
-        value_cell.font = Font(
-            name=theme.FONT, bold=True, size=14,
-            color=theme.INK_PRIMARY if value is not None else theme.INK_MUTED,
-        )
-        value_cell.alignment = Alignment(horizontal="right", vertical="center")
-        if value is not None:
-            value_cell.number_format = fmt
-        ws.row_dimensions[row].height = 22
-        row += 1
-
-    row += 1
     hint = ws.cell(
         row=row, column=2,
-        value="To score a stock's conviction, use the Conviction sheet. "
-              "To add or remove a stock, use the Universe sheet.",
+        value="Your rankings are on the Top Rankings sheet. To add or remove a stock, "
+              "use the Universe sheet. To change how the categories are set, use "
+              "Settings.",
     )
     hint.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_MUTED)
     ws.merge_cells(start_row=row, start_column=2, end_row=row, end_column=4)
+
+    # In the file rather than only in a log, because the file is the thing Jeff has in
+    # front of him when he emails to say something looks wrong.
+    row += 2
+    stamp = ws.cell(row=row, column=2, value=f"AJZ Dashboard v{__version__}")
+    stamp.font = Font(name=theme.FONT, size=9, color=theme.INK_MUTED)
 
     _protect(ws)
 
@@ -162,10 +153,17 @@ def _build_dashboard(ws: Worksheet, stocks: list[ScoredStock], status: RefreshSt
 # --- Sheet 2: Top Rankings ------------------------------------------------------------
 
 
-def _build_rankings(ws: Worksheet, stocks: list[ScoredStock]) -> None:
-    headers = ["Rank", "Ticker", "Company", "Sector", "AJZ Score", "AJZ Value",
-               "Rating", "Conviction", "Conviction Rating", "Category", "Rank Δ", "Notes"]
-    widths = [7, 10, 30, 22, 11, 11, 12, 11, 16, 22, 8, 40]
+def _build_rankings(ws: Worksheet, stocks: list[ScoredStock],
+                    thresholds: Thresholds) -> None:
+    # Column order is Jeff's, from v2.1: each number is immediately followed by the word
+    # for it, so he reads across a row rather than back and forth to a legend. His
+    # Conviction and Category columns (old H, I, J) are gone with the feature.
+    headers = ["Rank", "Ticker", "Company", "Sector",
+               "AJZ Score", "Score Category",
+               "Forward P/E", "P/E Category",
+               "AJZ Value", "Value Category",
+               "Rank Δ", "Notes"]
+    widths = [7, 10, 28, 20, 11, 15, 12, 17, 11, 15, 8, 40]
     _write_header(ws, 1, headers, widths)
 
     ranked = rank_stocks(stocks)
@@ -173,13 +171,13 @@ def _build_rankings(ws: Worksheet, stocks: list[ScoredStock]) -> None:
 
     row = 2
     for position, s in enumerate(ranked, start=1):
-        _write_ranking_row(ws, row, s, position)
+        _write_ranking_row(ws, row, s, position, thresholds)
         row += 1
 
     # Unrankable rows are shown but never ranked — they are visible so Jeff knows they
     # exist, and excluded so they cannot pollute an average.
     for s in unrankable:
-        _write_ranking_row(ws, row, s, None)
+        _write_ranking_row(ws, row, s, None, thresholds)
         row += 1
 
     ws.freeze_panes = "C2"
@@ -187,7 +185,37 @@ def _build_rankings(ws: Worksheet, stocks: list[ScoredStock]) -> None:
     _protect(ws)
 
 
-def _write_ranking_row(ws: Worksheet, row: int, s: ScoredStock, position: int | None) -> None:
+def _banded(ws: Worksheet, row: int, col: int, label: str | None,
+            table: BandTable | None = None) -> None:
+    """A category cell: the word, shaded by the band's position, never colour alone.
+
+    Position rather than name, because Jeff owns the names and changes them. Passing the
+    table is what lets a renamed band keep its place in the ramp; without it the cell
+    still says the right word, just without the shading.
+    """
+    cell = ws.cell(row=row, column=col, value=label or "—")
+    index = _band_index(table, label)
+    if index is None:
+        _style_body(cell, bold=True, align="center", ink=theme.INK_MUTED)
+        return
+
+    fill, ink = theme.band_style(index, len(table.bands))
+    _style_body(cell, bold=True, align="center", ink=ink)
+    if fill:
+        cell.fill = _fill(fill)
+
+
+def _band_index(table: BandTable | None, label: str | None) -> int | None:
+    if table is None or label is None:
+        return None
+    for index, band in enumerate(table.bands):
+        if band.label == label:
+            return index
+    return None
+
+
+def _write_ranking_row(ws: Worksheet, row: int, s: ScoredStock,
+                       position: int | None, thresholds: Thresholds) -> None:
     d = s.data
     rank_cell = ws.cell(row=row, column=1, value=position if position else "—")
     _style_body(rank_cell, bold=True, align="center",
@@ -197,95 +225,102 @@ def _write_ranking_row(ws: Worksheet, row: int, s: ScoredStock, position: int | 
     _style_body(ws.cell(row=row, column=3, value=d.company or ""))
     _style_body(ws.cell(row=row, column=4, value=d.sector or ""), ink=theme.INK_SECONDARY)
 
-    _style_body(ws.cell(row=row, column=5, value=s.ajz_score if s.ajz_score is not None else "—"),
+    _style_body(ws.cell(row=row, column=5,
+                        value=s.ajz_score if s.ajz_score is not None else "—"),
                 number_format="0.0" if s.ajz_score is not None else None, align="right")
-    _style_body(ws.cell(row=row, column=6, value=s.ajz_value_score if s.ajz_value_score is not None else "—"),
-                bold=True, number_format="0.00" if s.ajz_value_score is not None else None, align="right")
+    _banded(ws, row, 6, s.score_label, thresholds.score_bands)
 
-    rating = ws.cell(row=row, column=7, value=s.ajz_rating or "—")
-    _style_body(rating, bold=True, align="center",
-                ink=theme.AJZ_BAND_INK.get(s.ajz_rating, theme.INK_MUTED))
-    if s.ajz_rating and theme.AJZ_BAND_FILL.get(s.ajz_rating):
-        rating.fill = _fill(theme.AJZ_BAND_FILL[s.ajz_rating])
+    _style_body(ws.cell(row=row, column=7,
+                        value=s.forward_pe if s.forward_pe is not None else "—"),
+                number_format="0.0" if s.forward_pe is not None else None, align="right")
+    _banded(ws, row, 8, s.pe_label, thresholds.pe_bands)
 
-    _style_body(ws.cell(row=row, column=8, value=s.conviction_score if s.conviction_score is not None else "—"),
-                align="center")
-
-    crating = ws.cell(row=row, column=9, value=s.conviction_rating or "—")
-    _style_body(crating, align="center",
-                ink=theme.CONVICTION_BAND_INK.get(s.conviction_rating, theme.INK_MUTED))
-    if s.conviction_rating and theme.CONVICTION_BAND_FILL.get(s.conviction_rating):
-        crating.fill = _fill(theme.CONVICTION_BAND_FILL[s.conviction_rating])
-
-    cat = ws.cell(row=row, column=10, value=s.category.value)
-    _style_body(cat, bold=True, align="center",
-                ink=theme.CATEGORY_INK.get(s.category.value, theme.INK_PRIMARY))
-    if theme.CATEGORY_FILL.get(s.category.value):
-        cat.fill = _fill(theme.CATEGORY_FILL[s.category.value])
+    _style_body(ws.cell(row=row, column=9,
+                        value=s.ajz_value_score if s.ajz_value_score is not None else "—"),
+                bold=True,
+                number_format="0.00" if s.ajz_value_score is not None else None,
+                align="right")
+    _banded(ws, row, 10, s.value_label, thresholds.value_bands)
 
     _style_body(ws.cell(row=row, column=11, value="—"), align="center", ink=theme.INK_MUTED)
-    _style_body(ws.cell(row=row, column=12, value="; ".join(s.notes)),
-                ink=theme.INK_MUTED)
+    _style_body(ws.cell(row=row, column=12, value="; ".join(s.notes)), ink=theme.INK_MUTED)
 
 
 # --- Sheet 3: Opportunity Matrix ------------------------------------------------------
 
 
-def _build_matrix(ws: Worksheet, stocks: list[ScoredStock]) -> None:
-    """Jeff's 2x2, laid out as an actual 2x2 rather than a list with a category column."""
+def _build_matrix(ws: Worksheet, stocks: list[ScoredStock],
+                  thresholds: Thresholds) -> None:
+    """The Primary Screen, as columns of tickers under each of Jeff's Value categories.
+
+    Was a 2x2 of AJZ Value against Conviction. Jeff's v2.1: "I think Opportunity Matrix
+    Sheet should be the categories of Primary Screen". With conviction gone one axis of
+    the 2x2 no longer exists, and a 2x2 with one real axis is a list drawn as a square.
+
+    So it is a list — one column per band, in his order, best on the left. He also wrote
+    "For future there may be a Secondary Screen or portfolio calc but for now I think I
+    need to keep it simple", which is an instruction not to invent a second axis to
+    replace the one we removed.
+    """
     ws.sheet_view.showGridLines = False
     ws.column_dimensions["A"].width = 3
-    for col in "BCD":
-        ws.column_dimensions[col].width = 34
 
     title = ws.cell(row=2, column=2, value="Opportunity Matrix")
     title.font = Font(name=theme.FONT, bold=True, size=20)
 
-    sub = ws.cell(row=3, column=2, value="AJZ Value Score vs Conviction")
+    sub = ws.cell(row=3, column=2, value="Primary Screen — AJZ Value Score categories")
     sub.font = Font(name=theme.FONT, size=11, italic=True, color=theme.INK_SECONDARY)
 
-    quadrants = [
-        (5, 2, Category.CORE_HOLDING, "High AJZ · Very High Conviction"),
-        (5, 3, Category.AGGRESSIVE, "High AJZ · High Conviction"),
-        (16, 2, Category.DEFENSIVE, "Lower AJZ · High Conviction"),
-        (16, 3, Category.AVOID, "Lower AJZ · Lower Conviction"),
-    ]
+    ranked = rank_stocks(stocks)
+    bands = thresholds.value_bands.bands
+    ranges = thresholds.value_bands.display_ranges()
 
-    for top, col, category, caption in quadrants:
-        head = ws.cell(row=top, column=col, value=category.value)
-        head.fill = _fill(theme.CATEGORY_FILL.get(category.value) or theme.NEUTRAL_FILL)
-        head.font = Font(name=theme.FONT, bold=True, size=12,
-                         color=theme.CATEGORY_INK.get(category.value, theme.INK_PRIMARY))
+    for index, (band, range_text) in enumerate(zip(bands, ranges)):
+        col = 2 + index
+        ws.column_dimensions[get_column_letter(col)].width = 20
+
+        head = ws.cell(row=5, column=col, value=band.label)
+        fill, ink = theme.band_style(index, len(bands))
+        head.fill = _fill(fill or theme.NEUTRAL_FILL)
+        head.font = Font(name=theme.FONT, bold=True, size=12, color=ink)
         head.alignment = Alignment(horizontal="center", vertical="center")
-        ws.row_dimensions[top].height = 24
+        ws.row_dimensions[5].height = 24
 
-        cap = ws.cell(row=top + 1, column=col, value=caption)
+        cap = ws.cell(row=6, column=col, value=range_text)
         cap.font = Font(name=theme.FONT, size=9, italic=True, color=theme.INK_MUTED)
         cap.alignment = Alignment(horizontal="center")
 
-        members = [s for s in rank_stocks(stocks) if s.category is category]
-        for offset, s in enumerate(members[:8]):
-            cell = ws.cell(
-                row=top + 2 + offset,
-                value=f"{s.data.ticker}   {s.ajz_value_score:.1f}   ({s.conviction_score})",
-                column=col,
-            )
+        members = [s for s in ranked if s.value_label == band.label]
+        for offset, stock in enumerate(members):
+            cell = ws.cell(row=7 + offset, column=col,
+                           value=f"{stock.data.ticker}   {stock.ajz_value_score:.1f}")
             cell.font = Font(name=theme.FONT, size=11)
             cell.alignment = Alignment(horizontal="center")
-        if len(members) > 8:
-            more = ws.cell(row=top + 10, column=col, value=f"+{len(members) - 8} more")
-            more.font = Font(name=theme.FONT, size=9, italic=True, color=theme.INK_MUTED)
-            more.alignment = Alignment(horizontal="center")
+
+        # An empty category is information, not a gap: it says his cut-off is above
+        # everything he owns. Left unlabelled it reads as a rendering failure instead.
+        if not members:
+            empty = ws.cell(row=7, column=col, value="none")
+            empty.font = Font(name=theme.FONT, size=10, italic=True,
+                              color=theme.INK_MUTED)
+            empty.alignment = Alignment(horizontal="center")
+
+    unrankable = [s for s in stocks if not s.is_rankable]
+    if unrankable:
+        row = 9 + max((sum(1 for s in ranked if s.value_label == b.label)
+                       for b in bands), default=0)
+        note = ws.cell(row=row, column=2,
+                       value=f"Not scored: {', '.join(s.ticker for s in unrankable)} — "
+                             "no usable P/E, so no AJZ Value Score to categorise.")
+        note.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_MUTED)
 
     _protect(ws)
 
 
-# --- Sheet 4: Alerts ------------------------------------------------------------------
-
-
-def _build_alerts(ws: Worksheet, stocks: list[ScoredStock]) -> None:
-    headers = ["Alert", "Ticker", "Company", "AJZ Value", "Conviction", "Why"]
-    widths = [14, 10, 30, 12, 12, 52]
+def _build_alerts(ws: Worksheet, stocks: list[ScoredStock],
+                  thresholds: Thresholds) -> None:
+    headers = ["Alert", "Ticker", "Company", "AJZ Value", "Category", "Why"]
+    widths = [14, 10, 30, 12, 15, 58]
     _write_header(ws, 1, headers, widths)
 
     severity = {"EXIT": 0, "WARNING": 1, "DOWNGRADE": 2, "BUY": 3, "UPGRADE": 4}
@@ -309,99 +344,109 @@ def _build_alerts(ws: Worksheet, stocks: list[ScoredStock]) -> None:
         _style_body(ws.cell(row=row, column=3, value=s.data.company or ""))
         _style_body(ws.cell(row=row, column=4, value=s.ajz_value_score),
                     number_format="0.00", align="right")
-        _style_body(ws.cell(row=row, column=5, value=s.conviction_score or "—"), align="center")
-        _style_body(ws.cell(row=row, column=6, value=_explain(alert, s)),
+        _banded(ws, row, 5, s.value_label, thresholds.value_bands)
+        _style_body(ws.cell(row=row, column=6, value=_explain(alert, s, thresholds)),
                     ink=theme.INK_SECONDARY)
 
     ws.freeze_panes = "A2"
     _protect(ws)
 
 
-def _explain(alert: str, s: ScoredStock) -> str:
-    """Every alert says why, in words. Jeff should never have to reverse-engineer a rule."""
+def _explain(alert: str, s: ScoredStock, thresholds: Thresholds) -> str:
+    """Every alert says why, in words, quoting the number he set.
+
+    The thresholds are read rather than hardcoded so the sentence cannot drift from the
+    rule. The previous version wrote "is above 7" as literal text, which would have
+    quietly started lying the first time Jeff changed 7 to something else on the
+    Settings sheet -- a wrong explanation is worse than none, because he would trust it.
+    """
     v = s.ajz_value_score
-    c = s.conviction_score
     if alert == "BUY":
-        return f"AJZ Value {v:.1f} is above 7 and conviction {c} is above 20."
+        return f"AJZ Value {v:.1f} is above {thresholds.buy_value:g}."
     if alert == "WARNING":
-        return f"AJZ Value {v:.1f} has fallen below 5."
+        return f"AJZ Value {v:.1f} has fallen below {thresholds.warning_value:g}."
     if alert == "EXIT":
-        return f"AJZ Value {v:.1f} is below 3 and conviction {c} is below 15."
+        return f"AJZ Value {v:.1f} is below {thresholds.exit_value:g}."
     if alert == "UPGRADE":
-        return "Moved up sharply in the rankings since last week."
+        return (f"AJZ Score up more than {thresholds.mover_score_pct:g}%, forward P/E "
+                f"down more than {thresholds.mover_pe_pct:g}%, or moved up a category.")
     if alert == "DOWNGRADE":
-        return "Fell sharply in the rankings since last week."
+        return (f"AJZ Score down more than {thresholds.mover_score_pct:g}% or forward "
+                f"P/E up more than {thresholds.mover_pe_pct:g}%.")
     return ""
 
 
 # --- Sheet 5: Movers ------------------------------------------------------------------
 
 
-def _build_movers(ws: Worksheet, stocks: list[ScoredStock]) -> None:
-    headers = ["Ticker", "Company", "This week", "Last week", "Change"]
-    widths = [10, 30, 12, 12, 12]
+def _build_movers(ws: Worksheet, stocks: list[ScoredStock],
+                  thresholds: Thresholds, movement: dict | None = None) -> None:
+    """What has actually changed since the last refresh.
+
+    Jeff, v2.1: "Please check the Movers page as it doesn't look like its updating."
+    He was right, and it was worse than not updating: the sheet was a stub. It wrote one
+    italic line saying rank changes would appear after the second refresh and then never
+    wrote anything again, no matter how many refreshes ran. `History.movers()` existed
+    and was tested; nothing ever called it into the workbook.
+
+    He also specified the rules and the empty state: alert on an AJZ Score move over 25%
+    or a forward P/E move over 10%, and "maybe there should be a note that says no movers
+    if no stock has moved to a different category".
+
+    Three distinct empty states, kept distinct. "No baseline yet" is not "nothing moved",
+    and neither is "nothing crossed a category line" -- collapsing them is how a sheet
+    ends up quietly reporting calm while it is in fact blind.
+    """
+    headers = ["Ticker", "Company", "What moved", "Was", "Now", "Change"]
+    widths = [10, 28, 20, 14, 14, 12]
     _write_header(ws, 1, headers, widths)
 
-    # Populated once the history store lands in Phase 3. Saying so is better than an
-    # empty sheet that looks broken — v5.1 shipped three of these with no explanation.
-    cell = ws.cell(row=2, column=1,
-                   value="Rank changes appear here after the second weekly refresh.")
-    cell.font = Font(name=theme.FONT, italic=True, color=theme.INK_MUTED)
-    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=5)
+    movement = movement or {}
+    rows = movement.get("rows") or []
+
+    if not movement.get("has_baseline"):
+        _note(ws, 2, len(headers),
+              "This is the first refresh, so there is nothing to compare against yet. "
+              "Movers will start reporting from your next refresh.")
+        _protect(ws)
+        return
+
+    if not rows:
+        _note(ws, 2, len(headers),
+              f"No movers. Nothing has moved more than "
+              f"{thresholds.mover_score_pct:g}% on AJZ Score or "
+              f"{thresholds.mover_pe_pct:g}% on forward P/E, and no stock has changed "
+              "category on AJZ Score, Forward P/E or AJZ Value Score.")
+        _protect(ws)
+        return
+
+    for row, entry in enumerate(rows, start=2):
+        _style_body(ws.cell(row=row, column=1, value=entry["ticker"]), bold=True)
+        _style_body(ws.cell(row=row, column=2, value=entry.get("company") or ""))
+        _style_body(ws.cell(row=row, column=3, value=entry["what"]),
+                    ink=theme.INK_SECONDARY)
+        _style_body(ws.cell(row=row, column=4, value=entry["was"]), align="right")
+        _style_body(ws.cell(row=row, column=5, value=entry["now"]), align="right")
+
+        change = ws.cell(row=row, column=6, value=entry["change"])
+        _style_body(change, bold=True, align="right",
+                    ink=theme.INK_POSITIVE if entry["improved"] else theme.INK_NEGATIVE)
+
+    ws.freeze_panes = "A2"
     _protect(ws)
 
 
-# --- Sheet 6: Conviction (EDITABLE) ---------------------------------------------------
+def _note(ws: Worksheet, row: int, width: int, text: str) -> None:
+    """A merged italic line explaining why a sheet is empty.
 
-
-def _build_conviction(ws: Worksheet, stocks: list[ScoredStock]) -> None:
-    """The only sheet Jeff is meant to type in (spec §7.3)."""
-    headers = ["Ticker", "Company", "Revenue Predictability", "Competitive Moat",
-               "Management Execution", "Balance Sheet Resilience", "Industry Tailwind",
-               "Total", "Rating"]
-    widths = [10, 28, 16, 16, 16, 16, 16, 9, 13]
-    _write_header(ws, 1, headers, widths)
-
-    intro = ws.cell(row=1, column=len(headers) + 2,
-                    value="Score each column 1–5. Leave blank if undecided — a partly "
-                          "scored stock is left out of the rankings rather than guessed at.")
-    intro.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_SECONDARY)
-
-    # Refuses a typo at entry rather than letting it silently corrupt a score.
-    validator = DataValidation(
-        type="whole", operator="between", formula1=1, formula2=5, allow_blank=True,
-        showErrorMessage=True, errorTitle="Score must be 1 to 5",
-        error="Enter a whole number from 1 (weakest) to 5 (strongest), or leave blank.",
-    )
-    ws.add_data_validation(validator)
-
-    for row, s in enumerate(sorted(stocks, key=lambda x: x.data.ticker), start=2):
-        _style_body(ws.cell(row=row, column=1, value=s.data.ticker), bold=True)
-        _style_body(ws.cell(row=row, column=2, value=s.data.company or ""))
-
-        for offset, field in enumerate(Conviction.COMPONENTS):
-            col = 3 + offset
-            cell = ws.cell(row=row, column=col, value=getattr(s.conviction, field))
-            _style_body(cell, align="center")
-            cell.protection = Protection(locked=False)
-            validator.add(cell)
-
-        total = ws.cell(row=row, column=8, value=s.conviction_score or "—")
-        _style_body(total, bold=True, align="center")
-
-        # Same words as the Category column on Top Rankings. They described the same
-        # state in two ways ("Not scored" here, "Needs Conviction" there), so being told
-        # to look for one and finding the other read as a missing feature rather than an
-        # empty field. Jeff hit this on the first open.
-        rating = ws.cell(row=row, column=9,
-                         value=s.conviction_rating or Category.UNSCORED.value)
-        _style_body(rating, align="center",
-                    ink=theme.CONVICTION_BAND_INK.get(s.conviction_rating, theme.INK_MUTED))
-        if s.conviction_rating and theme.CONVICTION_BAND_FILL.get(s.conviction_rating):
-            rating.fill = _fill(theme.CONVICTION_BAND_FILL[s.conviction_rating])
-
-    ws.freeze_panes = "C2"
-    _protect(ws)  # protection is on, but the score cells above are explicitly unlocked
+    An unexplained blank sheet reads as broken -- Jeff shipped three of them in v5.1 and
+    could not tell which were failing and which simply had nothing to say.
+    """
+    cell = ws.cell(row=row, column=1, value=text)
+    cell.font = Font(name=theme.FONT, italic=True, color=theme.INK_MUTED)
+    cell.alignment = Alignment(vertical="center", wrap_text=True)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=width)
+    ws.row_dimensions[row].height = 32
 
 
 # --- Sheet 8: Settings (EDITABLE) -----------------------------------------------------
@@ -409,24 +454,25 @@ def _build_conviction(ws: Worksheet, stocks: list[ScoredStock]) -> None:
 
 def _build_settings(ws: Worksheet, stocks: list[ScoredStock],
                     thresholds: Thresholds) -> None:
-    """Jeff's decision cut-offs (spec §6.5).
+    """Everything Jeff can change without calling anyone.
 
     Deliberately NOT here: the AJZ Score weights. Those are AJZ Rule 3.0 itself — he
     wrote "Keep Unchanged" beside them, and altering them changes what a score means,
-    breaking comparability with every stored snapshot. What IS here are the lines that
-    turn scores into decisions, which are investment judgements and therefore his.
+    breaking comparability with every stored snapshot. What IS here is everything that
+    turns a number into a word, which is investment judgement and therefore his.
 
     Column D holds the field key and is hidden: the read-back matches on it rather than
-    on the label text, so re-wording a label can never silently orphan a setting.
+    on the label text, so re-wording a label can never silently orphan a setting — and he
+    is expected to re-word labels, having renamed two of his own bands between v2.0 and
+    v2.1 of the change request.
     """
-    headers = ["Setting", "Your value", "What it does"]
-    widths = [42, 13, 66]
-    _write_header(ws, 1, headers, widths)
+    widths = [46, 13, 34, 3, 13]
+    _write_header(ws, 1, ["Setting", "Your value", "What it does"], widths)
     ws.column_dimensions["D"].hidden = True
 
     intro = ws.cell(row=1, column=6,
-                    value="Change a number in the 'Your value' column and it takes "
-                          "effect at the next refresh. Clear a cell to restore its default.")
+                    value="Change anything in the shaded columns and it takes effect at "
+                          "the next refresh. Clear a cell to restore its default.")
     intro.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_SECONDARY)
 
     positive = DataValidation(
@@ -436,52 +482,113 @@ def _build_settings(ws: Worksheet, stocks: list[ScoredStock],
     )
     ws.add_data_validation(positive)
 
-    for row, (key, label, value, explanation) in enumerate(thresholds.describe(), start=2):
+    row = 2
+    for key, label, value, explanation in thresholds.describe():
         _style_body(ws.cell(row=row, column=1, value=label))
-
         cell = ws.cell(row=row, column=2, value=value)
         _style_body(cell, bold=True, align="center")
         cell.protection = Protection(locked=False)
         positive.add(cell)
-
         _style_body(ws.cell(row=row, column=3, value=explanation), ink=theme.INK_MUTED)
         ws.cell(row=row, column=4, value=key)
-
-    row = len(thresholds.describe()) + 3
-
-    # Immediate feedback on what the current settings actually produce. Without this,
-    # a setting that empties a bucket is invisible until he goes hunting for it — which
-    # is exactly how "Aggressive Position" sat unreachable without anyone noticing.
-    heading = ws.cell(row=row, column=1, value="With these settings, your list looks like:")
-    heading.font = Font(name=theme.FONT, bold=True, size=11)
-    row += 1
-
-    counts = {c: sum(1 for s in stocks if s.category is c) for c in Category}
-    for category in (Category.CORE_HOLDING, Category.AGGRESSIVE, Category.DEFENSIVE,
-                     Category.AVOID, Category.UNSCORED, Category.NOT_RATED):
-        _style_body(ws.cell(row=row, column=1, value=f"    {category.value}"),
-                    ink=theme.INK_SECONDARY)
-        _style_body(ws.cell(row=row, column=2, value=counts[category]), align="center")
-        if counts[category] == 0 and category is Category.AGGRESSIVE:
-            _style_body(
-                ws.cell(row=row, column=3,
-                        value="Nothing qualifies. Lower the 'High AJZ Value' number, or "
-                              "widen the gap between the Core and Aggressive conviction "
-                              "levels."),
-                ink=theme.INK_SECONDARY)
         row += 1
 
-    if not thresholds.aggressive_is_reachable:
-        warning = ws.cell(
-            row=row + 1, column=1,
-            value="Note: Core and Aggressive require the same conviction, so no stock "
-                  "can ever be an Aggressive Position.",
-        )
-        warning.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_PRIMARY)
-        warning.fill = _fill(theme.STATUS_WARNING)
+    for attr, title, _default in BAND_TABLES:
+        row = _write_band_table(ws, row + 1, attr, title,
+                                getattr(thresholds, attr), stocks)
 
     ws.freeze_panes = "A2"
     _protect(ws)
+
+
+def _band_counts(attr: str, table: BandTable,
+                 stocks: list[ScoredStock]) -> dict[str, int]:
+    """How many stocks currently land in each band of a table.
+
+    Shown beside every band because a category nobody falls into is otherwise invisible.
+    That is not hypothetical: "Aggressive Position" sat permanently unreachable in the
+    previous version and nobody noticed for weeks. It is also the fastest way for Jeff to
+    see that his own AJZ Score table puts thirteen of twenty-four stocks in "Legendary" —
+    a fact about his numbers that no amount of us explaining lands as well as the count
+    sitting next to the word.
+    """
+    getter = {
+        "score_bands": lambda s: s.ajz_score,
+        "pe_bands": lambda s: s.forward_pe,
+        "value_bands": lambda s: s.ajz_value_score,
+    }[attr]
+
+    counts = {b.label: 0 for b in table.bands}
+    for stock in stocks:
+        label = table.label_for(getter(stock))
+        if label is not None:
+            counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _write_band_table(ws: Worksheet, row: int, attr: str, title: str,
+                      table: BandTable, stocks: list[ScoredStock]) -> int:
+    """Write one editable category table. Returns the next free row."""
+    heading = ws.cell(row=row, column=1, value=title)
+    heading.font = Font(name=theme.FONT, bold=True, size=12)
+    ws.cell(row=row, column=4, value=f"{TABLE_PREFIX}{attr}")
+    row += 1
+
+    for col, label in enumerate(["Category name", "Starts at", "Range (automatic)",
+                                 None, "Stocks now"], start=1):
+        if label is None:
+            continue
+        head = ws.cell(row=row, column=col, value=label)
+        head.font = Font(name=theme.FONT, bold=True, size=10, color=theme.INK_SECONDARY)
+    row += 1
+
+    floors = DataValidation(
+        type="decimal", allow_blank=True, showErrorMessage=True,
+        operator="between", formula1=-1000000, formula2=1000000,
+        errorTitle="Enter a number",
+        error="Type the number this category starts at, or clear both cells to remove it.",
+    )
+    ws.add_data_validation(floors)
+
+    counts = _band_counts(attr, table, stocks)
+    first = row
+
+    # Real bands, then blank spares. Excel refuses to insert a row into a protected
+    # sheet, so spares are how he adds a category; the reader sorts by floor, so it does
+    # not matter that the only free rows are at the bottom.
+    entries = list(table.rows()) + [(None, None)] * SPARE_BAND_ROWS
+    for label, floor in entries:
+        name = ws.cell(row=row, column=1, value=label)
+        _style_body(name)
+        name.protection = Protection(locked=False)
+
+        value = ws.cell(row=row, column=2, value=floor)
+        _style_body(value, bold=True, align="center", number_format="General")
+        value.protection = Protection(locked=False)
+        floors.add(value)
+
+        # A live formula, not text stamped at refresh time. Moving one floor visibly
+        # re-shapes the band above it the moment he presses Enter — he sees the
+        # consequence of the edit while he is still deciding, with no refresh, no
+        # network, and nobody to ask. It reads the floors; the floors never read it.
+        if row == first:
+            formula = f'=IF(B{row}="","",TEXT(B{row},"General")&" and above")'
+        else:
+            formula = (
+                f'=IF(B{row}="","",'
+                f'IF(B{row + 1}="","Below "&TEXT(B{row - 1},"General"),'
+                f'TEXT(B{row - 1}-0.1,"General")&" – "&TEXT(B{row},"General")))'
+            )
+        _style_body(ws.cell(row=row, column=3, value=formula), ink=theme.INK_MUTED)
+
+        count = counts.get(label) if label else None
+        cell = ws.cell(row=row, column=5, value=count if count is not None else "")
+        _style_body(cell, align="center",
+                    ink=theme.INK_MUTED if not count else theme.INK_SECONDARY)
+        row += 1
+
+    ws.cell(row=row, column=4, value=TABLE_END)
+    return row + 1
 
 
 # --- Sheet 7: Universe (EDITABLE) -----------------------------------------------------
@@ -494,7 +601,7 @@ def _build_universe(ws: Worksheet, stocks: list[ScoredStock]) -> None:
 
     intro = ws.cell(row=1, column=7,
                     value="Add a ticker to include it. Set Active to NO to hide one "
-                          "without losing its conviction scores.")
+                          "without deleting the row.")
     intro.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_SECONDARY)
 
     active_validator = DataValidation(
@@ -532,6 +639,7 @@ def build_workbook(
     status: RefreshStatus | None = None,
     generated_at: datetime | None = None,
     thresholds: Thresholds = DEFAULT_THRESHOLDS,
+    movement: dict | None = None,
 ) -> Workbook:
     """Build the complete workbook. Pure: takes data, returns a Workbook, touches no disk."""
     from .status import RefreshState
@@ -545,11 +653,10 @@ def build_workbook(
 
     builders = [
         ("Dashboard", lambda ws: _build_dashboard(ws, stocks, status)),
-        ("Top Rankings", lambda ws: _build_rankings(ws, stocks)),
-        ("Opportunity Matrix", lambda ws: _build_matrix(ws, stocks)),
-        ("Alerts", lambda ws: _build_alerts(ws, stocks)),
-        ("Movers", lambda ws: _build_movers(ws, stocks)),
-        ("Conviction", lambda ws: _build_conviction(ws, stocks)),
+        ("Top Rankings", lambda ws: _build_rankings(ws, stocks, thresholds)),
+        ("Opportunity Matrix", lambda ws: _build_matrix(ws, stocks, thresholds)),
+        ("Alerts", lambda ws: _build_alerts(ws, stocks, thresholds)),
+        ("Movers", lambda ws: _build_movers(ws, stocks, thresholds, movement)),
         ("Universe", lambda ws: _build_universe(ws, stocks)),
         ("Settings", lambda ws: _build_settings(ws, stocks, thresholds)),
     ]

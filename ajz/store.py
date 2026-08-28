@@ -1,15 +1,21 @@
 """Reading Jeff's hand-entered data back out of the workbook (spec §7.3).
 
-Conviction scores are the only thing in this system that cannot be regenerated. Four of
-the five AJZ inputs come from an API; conviction is five human judgements per stock that
-no endpoint can supply. Losing them means Jeff redoes work he may not remember.
+What he types is the only thing in this system that cannot be regenerated. The AJZ inputs
+all come from an API; his universe and his category tables are judgements no endpoint can
+supply. Losing them means he redoes work he may not remember doing.
 
 So this module is written defensively and the invariant is absolute:
 
-    NEVER write a workbook containing less conviction data than the one it replaces.
+    NEVER write a workbook containing less of Jeff's own input than the one it replaces.
 
 Every failure path here aborts rather than degrades. A refresh that does not happen is a
-minor annoyance; a refresh that silently blanks his scores is unrecoverable.
+minor annoyance; a refresh that silently blanks his edits is unrecoverable.
+
+Conviction was removed at his instruction in "Requested Changes for Items 2.1". Because
+that deletes data he hand-entered, `archive_conviction` copies any existing Conviction
+sheet somewhere permanent *before* the first post-upgrade refresh drops it. Rolling
+backups would not do: they prune, so the scores would survive thirty refreshes and then
+vanish. He said the calculation doesn't do anything; he did not say to burn his notes.
 """
 
 from __future__ import annotations
@@ -22,24 +28,23 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from .models import Conviction
+from .settings import TABLE_END, TABLE_PREFIX
 
-CONVICTION_SHEET = "Conviction"
+CONVICTION_SHEET = "Conviction"  # legacy; read once to archive, never written
 UNIVERSE_SHEET = "Universe"
 SETTINGS_SHEET = "Settings"
 SETTINGS_KEY_COL = 4   # hidden column holding the field key
 SETTINGS_VALUE_COL = 2
 
 TICKER_COL = 1
-FIRST_SCORE_COL = 3  # columns 3-7 are the five conviction components
 UNIVERSE_ACTIVE_COL = 4
 UNIVERSE_NOTES_COL = 5
 
 BACKUPS_TO_KEEP = 30
 
 
-class ConvictionReadError(RuntimeError):
-    """Raised when existing conviction data cannot be read.
+class WorkbookReadError(RuntimeError):
+    """Raised when an existing workbook cannot be read.
 
     Always fatal to a refresh. If we cannot prove what Jeff had, we must not overwrite it.
     """
@@ -56,110 +61,92 @@ class UniverseEntry:
 
 @dataclass(frozen=True)
 class ReadResult:
-    conviction: dict[str, Conviction]
     universe: list[UniverseEntry]
     warnings: tuple[str, ...] = ()
     settings: dict[str, object] = field(default_factory=dict)
 
-    @property
-    def scored_count(self) -> int:
-        return sum(1 for c in self.conviction.values() if c.is_complete)
-
-
-def _coerce_score(raw: object) -> tuple[int | None, str | None]:
-    """Turn whatever is in a cell into a 1-5 int, or None plus a warning.
-
-    Jeff may type "4", 4, 4.0, a stray space, or something else entirely. Data validation
-    catches most of it at entry, but validation can be bypassed by pasting, so this
-    never trusts the cell.
-    """
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return None, None
-    try:
-        value = int(float(str(raw).strip()))
-    except (TypeError, ValueError):
-        return None, f"ignored non-numeric score {raw!r}"
-    if not 1 <= value <= 5:
-        return None, f"ignored out-of-range score {raw!r}"
-    return value, None
-
 
 def read_existing(path: Path) -> ReadResult:
-    """Read conviction scores and the universe out of an existing workbook.
+    """Read Jeff's own edits -- universe and settings -- out of an existing workbook.
 
     On first run the file does not exist yet, which is a legitimate empty result rather
     than an error. Any *other* failure raises, because a workbook that exists but cannot
     be read is exactly the case where overwriting would destroy data.
     """
     if not path.exists():
-        return ReadResult(conviction={}, universe=[])
+        return ReadResult(universe=[])
 
     try:
         wb = load_workbook(path, data_only=True, read_only=True)
     except Exception as exc:  # noqa: BLE001 - any failure here must abort the refresh
-        raise ConvictionReadError(
+        raise WorkbookReadError(
             f"Could not open the existing workbook at {path}: {exc}. "
             "Refusing to overwrite it."
         ) from exc
 
     warnings: list[str] = []
     try:
-        conviction = _read_conviction_sheet(wb, warnings)
         universe = _read_universe_sheet(wb, warnings)
         settings = _read_settings_sheet(wb, warnings)
-    except ConvictionReadError:
+    except WorkbookReadError:
         raise
     except Exception as exc:  # noqa: BLE001
-        raise ConvictionReadError(
+        raise WorkbookReadError(
             f"Could not read saved data from {path}: {exc}. Refusing to overwrite it."
         ) from exc
     finally:
         wb.close()
 
-    return ReadResult(conviction=conviction, universe=universe,
-                      warnings=tuple(warnings), settings=settings)
+    return ReadResult(universe=universe, warnings=tuple(warnings), settings=settings)
 
 
-def _read_conviction_sheet(wb, warnings: list[str]) -> dict[str, Conviction]:
-    if CONVICTION_SHEET not in wb.sheetnames:
-        raise ConvictionReadError(
-            f"The workbook has no '{CONVICTION_SHEET}' sheet. This is not a workbook "
-            "this tool produced; refusing to overwrite it."
-        )
+def archive_conviction(path: Path, archive_dir: Path) -> Path | None:
+    """Preserve a legacy Conviction sheet before a refresh drops it. Idempotent.
 
-    ws = wb[CONVICTION_SHEET]
-    out: dict[str, Conviction] = {}
+    Returns the archive path if one was written, or None if there was nothing to save
+    (no workbook, no Conviction sheet, or it has already been archived).
 
-    for row in ws.iter_rows(min_row=2):
-        if not row:
-            continue
-        raw_ticker = row[TICKER_COL - 1].value if len(row) >= TICKER_COL else None
-        if raw_ticker is None or not str(raw_ticker).strip():
-            continue
-        ticker = str(raw_ticker).strip().upper()
+    Deliberately never raises: this is insurance on a deletion Jeff explicitly asked for,
+    so failing to take a copy must not be able to block the refresh he did ask for.
+    """
+    if not path.exists():
+        return None
 
-        if ticker in out:
-            warnings.append(f"{ticker}: duplicate row in Conviction sheet; kept the first")
-            continue
+    target = archive_dir / f"{path.stem} - conviction scores (archived).xlsx"
+    if target.exists():
+        return None
 
-        scores: list[int | None] = []
-        for offset in range(len(Conviction.COMPONENTS)):
-            index = FIRST_SCORE_COL - 1 + offset
-            raw = row[index].value if len(row) > index else None
-            value, warning = _coerce_score(raw)
-            if warning:
-                warnings.append(f"{ticker}: {warning}")
-            scores.append(value)
+    try:
+        wb = load_workbook(path, data_only=True, read_only=True)
+    except Exception:  # noqa: BLE001 - insurance must not become a failure mode
+        return None
+    try:
+        if CONVICTION_SHEET not in wb.sheetnames:
+            return None
+    finally:
+        wb.close()
 
-        out[ticker] = Conviction(*scores)
-
-    return out
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        source = load_workbook(path)
+        for name in list(source.sheetnames):
+            if name != CONVICTION_SHEET:
+                source.remove(source[name])
+        source.save(target)
+    except Exception:  # noqa: BLE001
+        return None
+    return target
 
 
 def _read_universe_sheet(wb, warnings: list[str]) -> list[UniverseEntry]:
     if UNIVERSE_SHEET not in wb.sheetnames:
-        warnings.append(f"No '{UNIVERSE_SHEET}' sheet found; universe left unchanged.")
-        return []
+        # This used to key off the Conviction sheet. Universe is now the marker that says
+        # "this file came from us" -- an existing file without one is somebody else's
+        # spreadsheet at the same path, and overwriting it is not ours to do.
+        raise WorkbookReadError(
+            f"The workbook has no '{UNIVERSE_SHEET}' sheet. This is not a workbook this "
+            "tool produced; refusing to overwrite it."
+        )
 
     ws = wb[UNIVERSE_SHEET]
     seen: set[str] = set()
@@ -267,11 +254,25 @@ def atomic_save(wb, path: Path) -> None:
         ) from exc
 
 
+def _cell(row, index: int):
+    """One cell of a row, or None past its end. Short rows are normal in openpyxl."""
+    return row[index].value if len(row) > index else None
+
+
 def _read_settings_sheet(wb, warnings: list[str]) -> dict[str, object]:
-    """Read Jeff's threshold edits (spec §6.5).
+    """Read Jeff's settings edits: scalar values and his three category tables.
 
     Matches on the hidden key column rather than the visible label, so re-wording a
     label in a future version cannot silently orphan a setting he has changed.
+
+    The sheet holds two shapes. Scalars are `label | value | explanation` rows keyed by
+    column D. Tables are announced by a `table:<field>` marker in column D, run as
+    `band name | starts at` rows, and close on a `table:end` marker.
+
+    Blank rows inside a table are spares, not terminators. The sheet is protected, so
+    Excel will not let Jeff insert a row; blank spares are how he adds a band, and he
+    will not reliably fill the topmost one. That is why the table needs an explicit end
+    marker rather than ending at the first gap.
 
     A missing sheet is NOT an error: workbooks written before Settings existed are still
     perfectly valid, and defaults are the right answer for them.
@@ -281,16 +282,38 @@ def _read_settings_sheet(wb, warnings: list[str]) -> dict[str, object]:
 
     ws = wb[SETTINGS_SHEET]
     out: dict[str, object] = {}
+    table_rows: list[tuple[object, object]] | None = None
+    skip_header = False
 
     for row in ws.iter_rows(min_row=2):
-        if len(row) < SETTINGS_KEY_COL:
+        marker = _cell(row, SETTINGS_KEY_COL - 1)
+        marker = str(marker).strip() if marker is not None else ""
+
+        if marker == TABLE_END:
+            table_rows = None
             continue
-        key = row[SETTINGS_KEY_COL - 1].value
-        if key is None or not str(key).strip():
+
+        if marker.startswith(TABLE_PREFIX):
+            table_rows = []
+            out[marker] = table_rows
+            skip_header = True   # the row after the marker is the column header
             continue
-        value = row[SETTINGS_VALUE_COL - 1].value
+
+        if table_rows is not None:
+            if skip_header:
+                skip_header = False
+                continue
+            label, floor = _cell(row, 0), _cell(row, 1)
+            if (label is None or not str(label).strip()) and floor is None:
+                continue  # an unused spare row
+            table_rows.append((label, floor))
+            continue
+
+        if not marker:
+            continue
+        value = _cell(row, SETTINGS_VALUE_COL - 1)
         if value is None or (isinstance(value, str) and not value.strip()):
             continue  # cleared cell -> fall back to the default for that field
-        out[str(key).strip()] = value
+        out[marker] = value
 
     return out

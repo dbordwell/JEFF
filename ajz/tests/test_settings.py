@@ -1,139 +1,111 @@
-"""Tests for Jeff's tunable thresholds (spec §6.5)."""
+"""Settings: what Jeff can change without calling anyone."""
 
 from __future__ import annotations
 
-import pytest
+from ajz.bands import DEFAULT_SCORE_BANDS, DEFAULT_VALUE_BANDS, Band
+from ajz.settings import (
+    DEFAULT_THRESHOLDS,
+    TABLE_PREFIX,
+    Thresholds,
+    from_mapping,
+)
 
-from ajz.calc import alerts_for, opportunity_category
-from ajz.models import Alert, Category
-from ajz.settings import DEFAULT_THRESHOLDS, Thresholds, from_mapping
 
-
-def test_defaults_reproduce_jeffs_original_framework():
-    """An untouched Settings sheet must behave exactly as his Copilot chat described."""
+def test_defaults_reproduce_jeffs_v21_tables_exactly():
     t = DEFAULT_THRESHOLDS
-    assert (t.strong_value, t.core_conviction, t.aggressive_conviction) == (7.0, 21, 16)
-    assert (t.warning_value, t.exit_value) == (5.0, 3.0)
+    assert t.score_bands.label_for(281.4) == "Legendary"
+    assert t.value_bands.label_for(11.82) == "Generational"
+    assert t.pe_bands.label_for(232.5) == "Bubble"
+    assert (t.mover_score_pct, t.mover_pe_pct) == (25.0, 10.0)
 
 
-def test_lowering_the_value_cutoff_promotes_stocks():
-    """The main lever. AJZ Value 6 / conviction 24 is Defensive by default."""
-    assert opportunity_category(6.0, 24) is Category.DEFENSIVE
-    relaxed = Thresholds(strong_value=5.0)
-    assert opportunity_category(6.0, 24, relaxed) is Category.CORE_HOLDING
-
-
-def test_aggressive_becomes_reachable_when_the_value_cutoff_drops():
-    """HOOD-like: AJZ Value 4.66, conviction 18. Unreachable at 7, Aggressive at 4.5."""
-    assert opportunity_category(4.66, 18) is Category.DEFENSIVE
-    tuned = Thresholds(strong_value=4.5)
-    assert opportunity_category(4.66, 18, tuned) is Category.AGGRESSIVE
-
-
-def test_widening_the_aggressive_band_downward_captures_medium_conviction():
-    """His PROSE says Aggressive is 'High AJZ + Medium conviction', and Medium is 11-15.
-
-    His EXAMPLES used 16-20 (BE 18, HOOD 18, MELI 19 all labelled Aggressive). The
-    implementation followed the examples. This proves the prose reading is one setting
-    away if that is what he actually meant.
-    """
-    prose_reading = Thresholds(aggressive_conviction=11, core_conviction=16)
-    assert opportunity_category(9.0, 13, prose_reading) is Category.AGGRESSIVE
-    assert opportunity_category(9.0, 18, prose_reading) is Category.CORE_HOLDING
-
-
-def test_equal_conviction_levels_close_the_aggressive_band_entirely():
-    """A configuration where the bucket can never be reached must be detectable."""
-    closed = Thresholds(core_conviction=16, aggressive_conviction=16)
-    assert closed.aggressive_is_reachable is False
-    assert opportunity_category(9.0, 18, closed) is Category.CORE_HOLDING
-    assert DEFAULT_THRESHOLDS.aggressive_is_reachable is True
-
-
-def test_core_below_aggressive_is_rejected():
-    """Inverted levels would make Aggressive unreachable in a confusing way."""
-    with pytest.raises(ValueError, match="Aggressive"):
-        Thresholds(core_conviction=15, aggressive_conviction=20)
-
-
-def test_exit_stricter_than_warning_is_rejected():
-    with pytest.raises(ValueError, match="exit"):
-        Thresholds(warning_value=3.0, exit_value=5.0)
-
-
-# --- Alerts ---------------------------------------------------------------------------
-
-
-def test_raising_the_warning_bar_makes_warnings_rarer():
-    """Live data fires WARNING on ~13 of 24 names, which trains Jeff to ignore them."""
-    assert Alert.WARNING in alerts_for(4.5, 20)
-    quieter = Thresholds(warning_value=3.0)
-    assert Alert.WARNING not in alerts_for(4.5, 20, thresholds=quieter)
-
-
-def test_buy_alert_follows_its_own_thresholds():
-    assert Alert.BUY not in alerts_for(6.0, 22)
-    easier = Thresholds(buy_value=5.0)
-    assert Alert.BUY in alerts_for(6.0, 22, thresholds=easier)
-
-
-def test_mover_sensitivity_is_tunable():
-    assert Alert.UPGRADE not in alerts_for(8.0, 22, rank_change=3)
-    sensitive = Thresholds(mover_places=3)
-    assert Alert.UPGRADE in alerts_for(8.0, 22, rank_change=3, thresholds=sensitive)
-
-
-# --- Reading the Settings sheet -------------------------------------------------------
-
-
-def test_values_are_read_from_a_mapping():
-    thresholds, warnings = from_mapping({"strong_value": "5", "warning_value": 3.5})
-    assert thresholds.strong_value == 5.0
-    assert thresholds.warning_value == 3.5
-    assert warnings == []
-
-
-def test_conviction_settings_are_coerced_to_whole_numbers():
-    thresholds, _ = from_mapping({"core_conviction": "20.0"})
-    assert thresholds.core_conviction == 20
-    assert isinstance(thresholds.core_conviction, int)
-
-
-def test_a_typo_falls_back_to_that_fields_default_without_stopping_the_refresh():
-    """A dashboard using one default beats no dashboard at all."""
-    thresholds, warnings = from_mapping({"strong_value": "seven"})
-    assert thresholds.strong_value == DEFAULT_THRESHOLDS.strong_value
-    assert any("not a number" in w for w in warnings)
-
-
-def test_blank_cells_are_ignored_rather_than_treated_as_zero():
-    """REGRESSION in spirit (v5.1): blank must never mean 0."""
-    thresholds, warnings = from_mapping({"strong_value": "", "warning_value": None})
+def test_an_empty_sheet_yields_the_defaults():
+    thresholds, warnings = from_mapping({})
     assert thresholds == DEFAULT_THRESHOLDS
     assert warnings == []
 
 
-def test_an_impossible_combination_falls_back_to_defaults_with_a_warning():
-    thresholds, warnings = from_mapping(
-        {"core_conviction": 15, "aggressive_conviction": 20}
-    )
+def test_he_can_retune_a_scalar():
+    thresholds, warnings = from_mapping({"mover_pe_pct": 15})
+    assert thresholds.mover_pe_pct == 15.0
+    assert warnings == []
+
+
+def test_a_percent_sign_typed_into_a_percent_field_is_accepted():
+    """The label says 'moved more than', the unit is percent, so he may well type '25%'."""
+    thresholds, warnings = from_mapping({"mover_score_pct": "30%"})
+    assert thresholds.mover_score_pct == 30.0
+    assert warnings == []
+
+
+def test_a_typo_in_one_cell_costs_that_cell_and_not_the_refresh():
+    thresholds, warnings = from_mapping({"mover_pe_pct": "abuot 10"})
+    assert thresholds.mover_pe_pct == DEFAULT_THRESHOLDS.mover_pe_pct
+    assert len(warnings) == 1
+
+
+def test_he_can_replace_a_whole_band_table():
+    rows = [("Cheap enough", 8.0), ("Too dear", 2.0)]
+    thresholds, warnings = from_mapping({f"{TABLE_PREFIX}value_bands": rows})
+    assert thresholds.value_bands.label_for(9) == "Cheap enough"
+    assert thresholds.value_bands.label_for(1) == "Too dear"
+    assert warnings == []
+
+
+def test_he_can_add_a_band_which_is_the_edit_he_actually_made_between_v20_and_v21():
+    """v2.0 had an open-ended '5.0+ Exceptional' top band; v2.1 split it three ways.
+    That exact edit must be doable in Excel, not by us."""
+    rows = [(b.label, b.floor) for b in DEFAULT_VALUE_BANDS.bands]
+    rows.insert(0, ("Once In A Lifetime", 20.0))
+    thresholds, warnings = from_mapping({f"{TABLE_PREFIX}value_bands": rows})
+    assert len(thresholds.value_bands.bands) == 8
+    assert thresholds.value_bands.label_for(25) == "Once In A Lifetime"
+    assert thresholds.value_bands.label_for(11.82) == "Generational"
+    assert warnings == []
+
+
+def test_he_can_rename_a_band_which_is_the_other_edit_he_made():
+    """'Fair' -> 'Fair to Poor' between v2.0 and v2.1. Renaming must not need code."""
+    rows = [(b.label, b.floor) for b in DEFAULT_SCORE_BANDS.bands]
+    rows[-1] = ("Utterly Dead", rows[-1][1])
+    thresholds, _ = from_mapping({f"{TABLE_PREFIX}score_bands": rows})
+    assert thresholds.score_bands.label_for(10) == "Utterly Dead"
+
+
+def test_clearing_a_table_restores_the_shipped_one_rather_than_leaving_stocks_unlabelled():
+    thresholds, warnings = from_mapping({f"{TABLE_PREFIX}score_bands": []})
+    assert thresholds.score_bands == DEFAULT_SCORE_BANDS
+    assert warnings == []
+
+
+def test_a_broken_row_is_dropped_and_reported_but_the_rest_of_the_table_survives():
+    rows = [("Good", 10.0), ("Broken", "no idea"), ("Bad", 1.0)]
+    thresholds, warnings = from_mapping({f"{TABLE_PREFIX}value_bands": rows})
+    assert [b.label for b in thresholds.value_bands.bands] == ["Good", "Bad"]
+    assert len(warnings) == 1
+
+
+def test_exit_above_warning_is_refused_but_his_tables_are_not_thrown_away():
+    """One contradictory number must not cost him seven bands he typed by hand."""
+    rows = [("Mine", 9.0), ("Also mine", 1.0)]
+    thresholds, warnings = from_mapping({
+        "exit_value": 9, "warning_value": 2,
+        f"{TABLE_PREFIX}value_bands": rows,
+    })
+    assert thresholds.exit_value == DEFAULT_THRESHOLDS.exit_value
+    assert thresholds.value_bands.label_for(9.5) == "Mine"
+    assert any("exit" in w.lower() for w in warnings)
+
+
+def test_unknown_keys_are_ignored_rather_than_crashing():
+    """A workbook written by a future version must still open in this one."""
+    thresholds, warnings = from_mapping({"some_future_setting": 4})
     assert thresholds == DEFAULT_THRESHOLDS
-    assert any("Aggressive" in w for w in warnings)
 
 
-def test_unreachable_aggressive_band_is_warned_about():
-    _, warnings = from_mapping({"core_conviction": 16, "aggressive_conviction": 16})
-    assert any("never be reached" in w for w in warnings)
-
-
-def test_unknown_keys_are_ignored():
-    thresholds, _ = from_mapping({"nonsense": 1, "strong_value": 6})
-    assert thresholds.strong_value == 6.0
-
-
-def test_describe_covers_every_tunable_field():
-    """The Settings sheet is generated from describe(), so it must not miss a field."""
-    from dataclasses import fields
-
-    described = {key for key, _, _, _ in DEFAULT_THRESHOLDS.describe()}
-    assert described == {f.name for f in fields(Thresholds)}
+def test_describe_covers_every_scalar_so_no_setting_is_invisible_on_the_sheet():
+    """A setting that exists in code but not on the sheet is one he has to phone about."""
+    described = {key for key, _, _, _ in Thresholds().describe()}
+    scalars = {f.name for f in Thresholds.__dataclass_fields__.values()
+               if not f.name.endswith("_bands")}
+    assert described == scalars

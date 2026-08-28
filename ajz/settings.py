@@ -1,4 +1,4 @@
-"""Jeff's tunable decision thresholds (spec §6.5).
+"""Jeff's tunable settings (Requested Changes for Items 2.1).
 
 A deliberate line runs through this module:
 
@@ -6,124 +6,139 @@ A deliberate line runs through this module:
     — are AJZ Rule 3.0 itself. Jeff wrote "Keep Unchanged" next to them, and changing them
     changes what a score *means*, breaking comparability with every past snapshot.
 
-  * **The DECISION thresholds ARE adjustable.** Where "high AJZ" starts, what triggers a
-    warning, which conviction level counts as Core — those are investment judgements, they
-    are his domain, and he will want to move them as he learns.
+  * **Everything that turns a number into a word IS adjustable.** His three category
+    tables and his two movement percentages are investment judgements, they are his
+    domain, and he is visibly still tuning them: between v2.0 and v2.1 of his change
+    request he split the Value table's top band into three because one band was
+    swallowing every stock. He did that unprompted, in a day, without asking.
 
-Without this, every tweak is a phone call to Dave, and a walk-away handoff that needs Dave
-is not a walk-away handoff. That is worth one extra editable sheet.
+That is the whole design rule here. Every number Jeff wrote in his change request is
+editable by Jeff on the Settings sheet — including the *names* of the categories and how
+many there are. The less of this that needs us, the less of it comes back to us.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields, replace
+
+from .bands import (
+    DEFAULT_PE_BANDS,
+    DEFAULT_SCORE_BANDS,
+    DEFAULT_VALUE_BANDS,
+    BandTable,
+)
+
+# Keys under which parsed band tables travel inside the settings mapping, so that reading
+# the sheet stays a single dict and no call signature has to grow a second argument.
+TABLE_PREFIX = "table:"
+TABLE_END = "table:end"   # closes a table, so blank spare rows inside one stay spares
+
+# Blank rows left at the foot of each table so Jeff can add a band. Excel will not let
+# him insert a row into a protected sheet, and unprotecting the sheet to allow it would
+# trade a real safeguard for a rare need. Three is enough for the kind of edit he has
+# actually made (v2.0 -> v2.1 added two), and the count is restored on every refresh.
+SPARE_BAND_ROWS = 3
+
+# (attribute, sheet title, default) — drives both writing and reading the sheet.
+BAND_TABLES: tuple[tuple[str, str, BandTable], ...] = (
+    ("score_bands", "AJZ Score — categories", DEFAULT_SCORE_BANDS),
+    ("pe_bands", "Forward P/E — categories", DEFAULT_PE_BANDS),
+    ("value_bands", "AJZ Value Score — categories (Primary Screen)", DEFAULT_VALUE_BANDS),
+)
 
 
 @dataclass(frozen=True)
 class Thresholds:
-    """The cut-offs that turn scores into decisions.
+    """The settings that turn scores into words and into alerts.
 
-    Defaults reproduce Jeff's original framework exactly, so an untouched Settings sheet
-    behaves precisely as his Copilot chat described.
+    Defaults reproduce Jeff's v2.1 tables exactly, so an untouched Settings sheet behaves
+    precisely as his change request specifies.
     """
 
-    # --- Opportunity Matrix
-    strong_value: float = 7.0        # AJZ Value at or above this is "high AJZ"
-    core_conviction: int = 21        # conviction for Core Holding
-    aggressive_conviction: int = 16  # conviction for Aggressive Position
+    # --- The three category tables (his "Settings: Tables")
+    score_bands: BandTable = field(default=DEFAULT_SCORE_BANDS)
+    pe_bands: BandTable = field(default=DEFAULT_PE_BANDS)
+    value_bands: BandTable = field(default=DEFAULT_VALUE_BANDS)
 
-    # --- Alerts
+    # --- Movers (his: "an alert for anything where the AJZ Score has moved more than
+    #     25% or the forward P/E has moved more than 10%")
+    mover_score_pct: float = 25.0
+    mover_pe_pct: float = 10.0
+
+    # --- Alerts. Conviction is gone from these by his instruction ("Get rid of
+    #     Conviction Calculation and references to same throughout"), which leaves them
+    #     as pure AJZ Value tests. He did not ask for the Alerts sheet itself to change,
+    #     so it keeps working on the half of each rule that survives.
     buy_value: float = 7.0
-    buy_conviction: int = 20
     warning_value: float = 5.0
     exit_value: float = 3.0
-    exit_conviction: int = 15
-    mover_places: int = 5            # rank change that counts as an upgrade/downgrade
 
     def __post_init__(self) -> None:
-        if self.core_conviction < self.aggressive_conviction:
-            raise ValueError(
-                f"core_conviction ({self.core_conviction}) must be at least "
-                f"aggressive_conviction ({self.aggressive_conviction}) — otherwise no "
-                "stock can ever be an Aggressive Position."
-            )
         if self.exit_value > self.warning_value:
             raise ValueError(
                 f"exit_value ({self.exit_value}) must not exceed warning_value "
                 f"({self.warning_value}) — an exit is more serious than a warning."
             )
 
-    @property
-    def aggressive_is_reachable(self) -> bool:
-        """Whether the Aggressive band is a real range or a closed door.
-
-        When core_conviction == aggressive_conviction the band has zero width and no
-        stock can ever land there. Worth detecting rather than leaving Jeff to wonder why
-        a bucket is permanently empty — which is exactly what happened with the live data.
-        """
-        return self.core_conviction > self.aggressive_conviction
-
     def describe(self) -> list[tuple[str, str, object, str]]:
-        """(key, human label, value, explanation) — drives the Settings sheet."""
+        """(key, human label, value, explanation) — the scalar rows of the Settings sheet."""
         return [
-            ("strong_value", "High AJZ Value starts at", self.strong_value,
-             "Above this counts as a high score. Lower it if too few stocks qualify."),
-            ("core_conviction", "Core Holding needs conviction of", self.core_conviction,
-             "Your 'Very High' band starts at 21."),
-            ("aggressive_conviction", "Aggressive Position needs conviction of",
-             self.aggressive_conviction,
-             "Must be below the Core number, or nothing can ever be Aggressive."),
+            ("mover_score_pct", "Movers alert: AJZ Score moved more than",
+             self.mover_score_pct,
+             "Percent change since the last refresh. Your change request said 25%."),
+            ("mover_pe_pct", "Movers alert: Forward P/E moved more than", self.mover_pe_pct,
+             "Percent change since the last refresh. Your change request said 10%."),
             ("buy_value", "BUY alert: AJZ Value above", self.buy_value,
-             "Both this and the conviction test must pass."),
-            ("buy_conviction", "BUY alert: conviction above", self.buy_conviction, ""),
+             "Raise this to make BUY alerts rarer."),
             ("warning_value", "WARNING alert: AJZ Value below", self.warning_value,
              "Raise or lower this to make warnings rarer or more common."),
             ("exit_value", "EXIT alert: AJZ Value below", self.exit_value,
-             "Both this and the conviction test must pass."),
-            ("exit_conviction", "EXIT alert: conviction below", self.exit_conviction, ""),
-            ("mover_places", "Rank move that counts as a big change", self.mover_places,
-             "Places gained or lost in a week."),
+             "Must not be above the WARNING number — an exit is the more serious call."),
         ]
 
 
 DEFAULT_THRESHOLDS = Thresholds()
 
-_INT_FIELDS = {"core_conviction", "aggressive_conviction", "buy_conviction",
-               "exit_conviction", "mover_places"}
+_SCALAR_FIELDS = {
+    f.name for f in fields(Thresholds) if not f.name.endswith("_bands")
+}
 
 
 def from_mapping(values: dict[str, object]) -> tuple[Thresholds, list[str]]:
     """Build Thresholds from whatever was typed into the Settings sheet.
 
     Returns the thresholds plus any warnings. Never raises on bad input: a typo in one
-    cell falls back to that field's default rather than stopping the morning refresh.
-    A dashboard that silently uses a default is far better than no dashboard.
+    cell falls back to that field's default rather than stopping the refresh. Jeff
+    refreshes on demand with nobody to call, so a dashboard that quietly used a default
+    and said so beats no dashboard at all.
     """
     warnings: list[str] = []
     kwargs: dict[str, object] = {}
-    valid = {f.name for f in fields(Thresholds)}
 
     for key, raw in (values or {}).items():
-        if key not in valid:
+        if key.startswith(TABLE_PREFIX) or key not in _SCALAR_FIELDS:
             continue
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             continue
         try:
-            number = float(str(raw).strip())
+            kwargs[key] = float(str(raw).strip().rstrip("%"))
         except (TypeError, ValueError):
             warnings.append(f"Settings: '{key}' was not a number; using the default")
-            continue
-        kwargs[key] = int(number) if key in _INT_FIELDS else number
+
+    for attr, title, default in BAND_TABLES:
+        rows = values.get(f"{TABLE_PREFIX}{attr}") if values else None
+        if not rows:
+            continue  # sheet predates the tables, or he cleared them -> shipped defaults
+        table, table_warnings = BandTable.from_rows(title, list(rows), fallback=default)
+        warnings.extend(table_warnings)
+        kwargs[attr] = table
 
     try:
-        thresholds = Thresholds(**kwargs)
+        return Thresholds(**kwargs), warnings
     except ValueError as exc:
         warnings.append(f"Settings: {exc} Using defaults instead.")
-        return DEFAULT_THRESHOLDS, warnings
-
-    if not thresholds.aggressive_is_reachable:
-        warnings.append(
-            "Settings: Aggressive Position can never be reached with these numbers — "
-            "the Core and Aggressive conviction levels are equal."
-        )
-    return thresholds, warnings
+        # Keep his tables even when a scalar is contradictory: the two are independent
+        # judgements, and throwing away seven good bands over one bad number is worse
+        # than the bad number.
+        tables = {k: v for k, v in kwargs.items() if k.endswith("_bands")}
+        return replace(DEFAULT_THRESHOLDS, **tables), warnings

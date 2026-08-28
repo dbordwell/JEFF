@@ -24,10 +24,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import Config, MissingApiKeyError, load
 from .lock import AlreadyRunningError, single_instance
-from .refresh import ConvictionReadError, WorkbookLockedError, refresh
-from .seed import SEED_CONVICTION, SEED_UNIVERSE
+from .refresh import WorkbookLockedError, WorkbookReadError, refresh
+from .seed import SEED_UNIVERSE
 
 log = logging.getLogger("ajz")
 
@@ -125,7 +126,7 @@ def _main(argv: list[str] | None = None) -> int:
         _setup_logging(None, args.verbose)
         ok = uninstall()
         emit("Desktop shortcut removed." if ok else "Could not remove the shortcut.")
-        emit("Your dashboard, conviction scores and history were left in place.")
+        emit("Your dashboard, your settings and your history were left in place.")
         return 0 if ok else 1
 
     # A double-click cannot pass a flag, so the no-argument path has to be whichever
@@ -174,12 +175,11 @@ def _do_refresh(args) -> int:
                 history_path=config.history_path,
                 backup_dir=config.backup_dir,
                 seed_universe=SEED_UNIVERSE,
-                seed_conviction=SEED_CONVICTION,
             )
     except AlreadyRunningError as exc:
         emit(f"\n{exc}")
         return 5
-    except ConvictionReadError as exc:
+    except WorkbookReadError as exc:
         # The one failure we never write through: we could not prove what Jeff had.
         log.error("ABORTED, nothing written: %s", exc)
         emit("\nSomething looked wrong with the dashboard file, so it was left exactly "
@@ -196,18 +196,19 @@ def _do_refresh(args) -> int:
         log.warning("%s", warning)
 
     ranked = outcome.ranked
-    log.info("status=%s  scored=%d  ranked=%d  written=%s",
-             outcome.status.state.value, len(outcome.stocks), len(ranked), outcome.written)
+    log.info("ajz v%s  status=%s  scored=%d  ranked=%d  written=%s",
+             __version__, outcome.status.state.value, len(outcome.stocks), len(ranked), outcome.written)
 
     emit(f"\n{outcome.status.headline}")
     emit(f"{len(ranked)} of {len(outcome.stocks)} stocks scored and ranked.")
 
     if args.verbose and ranked:
-        emit(f"\n{'rank':>4}  {'ticker':<7}{'AJZ':>8}{'value':>8}  {'rating':<10}"
-              f"{'conv':>5}  category")
+        emit(f"\n{'rank':>4}  {'ticker':<7}{'AJZ':>8}{'fwd P/E':>9}{'value':>8}  "
+              f"{'category':<14}")
         for position, s in enumerate(ranked[:25], start=1):
-            emit(f"{position:>4}  {s.ticker:<7}{s.ajz_score:>8.1f}{s.ajz_value_score:>8.2f}"
-                  f"  {s.ajz_rating:<10}{s.conviction_score or 0:>5}  {s.category.value}")
+            emit(f"{position:>4}  {s.ticker:<7}{s.ajz_score:>8.1f}"
+                  f"{s.forward_pe or 0:>9.1f}{s.ajz_value_score:>8.2f}  "
+                  f"{s.value_label or '—':<14}")
 
     unrated = [s for s in outcome.stocks if not s.is_rankable]
     if unrated:

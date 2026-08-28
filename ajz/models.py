@@ -27,70 +27,12 @@ class PEBasis(str, Enum):
     TRAILING = "trailing"
 
 
-class Category(str, Enum):
-    """Opportunity Matrix bucket (spec §6.1)."""
-
-    CORE_HOLDING = "Core Holding"
-    AGGRESSIVE = "Aggressive Position"
-    DEFENSIVE = "Defensive Compounder"
-    AVOID = "Avoid"
-
-    # Two distinct kinds of "we can't classify this", deliberately not merged.
-    # v5.1 collapsed both into a silent 0 and produced "Avoid" for everything.
-    NOT_RATED = "Not Rated"  # no usable P/E -> no AJZ Value Score -> cannot rank
-    UNSCORED = "Needs Conviction"  # has AJZ Value, but Jeff hasn't scored conviction yet
-
-
 class Alert(str, Enum):
     BUY = "BUY"
     UPGRADE = "UPGRADE"
     WARNING = "WARNING"
     EXIT = "EXIT"
     DOWNGRADE = "DOWNGRADE"
-
-
-@dataclass(frozen=True)
-class Conviction:
-    """Jeff's five hand-entered 1-5 judgements (spec §7).
-
-    This is the only data in the system that cannot be regenerated, which is why it
-    is a separate type with its own validation rather than five loose floats.
-    """
-
-    predictability: int | None = None
-    moat: int | None = None
-    management: int | None = None
-    balance_sheet: int | None = None
-    tailwind: int | None = None
-
-    COMPONENTS = ("predictability", "moat", "management", "balance_sheet", "tailwind")
-
-    def __post_init__(self) -> None:
-        for name in self.COMPONENTS:
-            value = getattr(self, name)
-            if value is None:
-                continue
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise TypeError(f"conviction.{name} must be an int 1-5, got {value!r}")
-            if not 1 <= value <= 5:
-                raise ValueError(f"conviction.{name} must be 1-5, got {value}")
-
-    @property
-    def is_complete(self) -> bool:
-        """All five scored. Partial scoring does not count -- see `score`."""
-        return all(getattr(self, n) is not None for n in self.COMPONENTS)
-
-    @property
-    def score(self) -> int | None:
-        """Sum of the five components, or None if any is missing.
-
-        Deliberately None rather than a partial sum: summing three of five produces a
-        number in the 3-15 range that looks like a legitimate 'Low' conviction score
-        and would quietly misclassify the stock.
-        """
-        if not self.is_complete:
-            return None
-        return sum(getattr(self, n) for n in self.COMPONENTS)
 
 
 @dataclass(frozen=True)
@@ -128,15 +70,30 @@ class ScoredStock:
     """The output of the calculation core: one fully-evaluated row."""
 
     data: StockData
-    conviction: Conviction
     ajz_score: float | None
     ajz_value_score: float | None
-    ajz_rating: str | None
-    conviction_score: int | None
-    conviction_rating: str | None
-    category: Category
+
+    # Jeff's three category tables, applied. Each is the word beside the number on the
+    # Top Rankings sheet, and each comes from a table he can edit in Settings.
+    score_label: str | None = None
+    pe_label: str | None = None
+    value_label: str | None = None
+
     alerts: tuple[Alert, ...] = ()
     notes: tuple[str, ...] = field(default=())
+
+    @property
+    def forward_pe(self) -> float | None:
+        """The P/E behind this row.
+
+        Jeff specified this as "AJZ Score / AJZ Value Score", which is algebraically the
+        same P/E the adapter supplied, since AJZ Value Score is Score / P/E. We return
+        the supplied figure rather than re-deriving it: the division is exact either way,
+        but re-deriving would lose the number entirely whenever the Value Score is
+        missing -- which is precisely the loss-making case where the P/E is most worth
+        seeing. Check the Notes column for rows using a trailing P/E.
+        """
+        return self.data.pe_ratio
 
     @property
     def ticker(self) -> str:

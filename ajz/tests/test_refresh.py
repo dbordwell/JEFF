@@ -12,8 +12,10 @@ from datetime import datetime, timedelta
 import pytest
 from openpyxl import load_workbook
 
+from ajz.bands import Band
+from ajz.calc import rank_stocks
 from ajz.fixtures import sample_stocks
-from ajz.models import Conviction
+from ajz.settings import DEFAULT_THRESHOLDS, from_mapping
 from ajz.refresh import (
     AuthError,
     FetchResult,
@@ -22,7 +24,7 @@ from ajz.refresh import (
     refresh,
 )
 from ajz.status import RefreshState
-from ajz.store import ConvictionReadError, read_existing
+from ajz.store import WorkbookReadError, read_existing
 
 MONDAY = datetime(2026, 8, 17, 6, 0)
 NEXT_MONDAY = MONDAY + timedelta(days=7)
@@ -62,22 +64,23 @@ def run(paths, when=MONDAY, fetch=None, **kw):
     )
 
 
-def _set_conviction(path, ticker, scores):
-    """Simulate Jeff typing (or clearing) scores on the Conviction sheet.
+def _set_band(path, attr, index, label=None, floor=None):
+    """Simulate Jeff editing one row of a category table on the Settings sheet.
 
     Note the explicit `.value =` assignment. `ws.cell(row, col, value=None)` silently
     SKIPS the assignment in openpyxl, so passing None through the constructor would
-    leave the old score in place and quietly make a clearing test pass.
+    leave the old value in place and quietly make a clearing test pass.
     """
     wb = load_workbook(path)
-    ws = wb["Conviction"]
+    ws = wb["Settings"]
+    first = None
     for row in range(2, ws.max_row + 1):
-        if ws.cell(row=row, column=1).value == ticker:
-            for offset, value in enumerate(scores):
-                ws.cell(row=row, column=3 + offset).value = value
+        if ws.cell(row=row, column=4).value == f"table:{attr}":
+            first = row + 2
             break
-    else:
-        raise AssertionError(f"{ticker} not found in Conviction sheet")
+    assert first is not None, f"table:{attr} not found"
+    ws.cell(row=first + index, column=1).value = label
+    ws.cell(row=first + index, column=2).value = floor
     wb.save(path)
 
 
@@ -101,44 +104,64 @@ def test_first_run_fires_no_movement_alerts(paths):
     assert movement == []
 
 
-# --- The conviction round-trip, through the real path ---------------------------------
+# --- Jeff's edits surviving the real path ---------------------------------------------
 
 
-def test_jeffs_scores_survive_a_refresh(paths):
-    """THE critical guarantee. He scores a stock; tomorrow's refresh keeps it."""
+def test_jeffs_category_tables_survive_a_refresh(paths):
+    """THE critical guarantee, now that his tables are the hand-entered data.
+
+    Before v2.1 this test protected conviction scores. It protects the same thing: work
+    Jeff typed, which the refresh rewrites the file over the top of. What is irreplaceable
+    changed; that it must never be silently lost did not.
+    """
     run(paths)
-    _set_conviction(paths["workbook_path"], "NET", [5, 4, 3, 2, 1])
+    _set_band(paths["workbook_path"], "value_bands", 0, "Once In A Lifetime", 12.0)
 
     run(paths, when=NEXT_MONDAY)
 
-    assert read_existing(paths["workbook_path"]).conviction["NET"] == Conviction(5, 4, 3, 2, 1)
+    thresholds, _ = from_mapping(read_existing(paths["workbook_path"]).settings)
+    assert thresholds.value_bands.bands[0].label == "Once In A Lifetime"
+    assert thresholds.value_bands.bands[0].floor == 12.0
 
 
-def test_no_conviction_is_lost_across_many_refreshes(paths):
-    """Ten refreshes must not erode the data. Slow leaks are the dangerous kind."""
+def test_nothing_is_lost_across_many_refreshes(paths):
+    """Ten refreshes must not erode his edits. Slow leaks are the dangerous kind."""
     run(paths)
-    before = read_existing(paths["workbook_path"]).conviction
+    _set_band(paths["workbook_path"], "score_bands", 0, "Untouchable", 200.0)
 
     for week in range(1, 11):
         run(paths, when=MONDAY + timedelta(days=7 * week))
 
-    after = read_existing(paths["workbook_path"]).conviction
-    for ticker, conviction in before.items():
-        assert after[ticker] == conviction, f"{ticker} drifted"
+    thresholds, _ = from_mapping(read_existing(paths["workbook_path"]).settings)
+    assert thresholds.score_bands.bands[0] == Band("Untouchable", 200.0)
 
 
-def test_newly_scored_stock_becomes_classified_next_refresh(paths):
-    """NET starts unscored; once Jeff scores it, it should leave 'Needs Conviction'."""
+def test_an_edited_table_actually_changes_the_categories(paths):
+    """Surviving is not enough — the refresh has to obey it."""
     outcome = run(paths)
-    net = next(s for s in outcome.stocks if s.ticker == "NET")
-    assert net.category.value == "Needs Conviction"
+    assert _label_of(outcome, "NVDA") == "Generational"
 
-    _set_conviction(paths["workbook_path"], "NET", [5, 5, 5, 5, 5])
+    _set_band(paths["workbook_path"], "value_bands", 0, "Generational", 20.0)
+    outcome = run(paths, when=NEXT_MONDAY)
+    assert _label_of(outcome, "NVDA") == "Elite"
+
+
+def test_a_legacy_conviction_sheet_is_archived_on_the_upgrade_refresh(paths, tmp_path):
+    """Upgrading from v1.x deletes a sheet full of his hand-entered judgements. It gets
+    copied somewhere permanent first, and he is told where."""
+    run(paths)
+    wb = load_workbook(paths["workbook_path"])
+    ws = wb.create_sheet("Conviction")
+    ws.cell(row=1, column=1, value="Ticker")
+    ws.cell(row=2, column=1, value="NVDA")
+    ws.cell(row=2, column=3, value=4)
+    wb.save(paths["workbook_path"])
+
     outcome = run(paths, when=NEXT_MONDAY)
 
-    net = next(s for s in outcome.stocks if s.ticker == "NET")
-    assert net.conviction_score == 25
-    assert net.category.value != "Needs Conviction"
+    assert outcome.written
+    assert any("conviction" in w.lower() for w in outcome.warnings)
+    assert list(tmp_path.glob("*conviction scores (archived).xlsx"))
 
 
 def test_a_backup_is_written_on_every_refresh_after_the_first(paths):
@@ -152,7 +175,7 @@ def test_a_backup_is_written_on_every_refresh_after_the_first(paths):
 
 def test_auth_failure_leaves_the_existing_workbook_untouched(paths):
     run(paths)
-    _set_conviction(paths["workbook_path"], "NET", [5, 4, 3, 2, 1])
+    _set_band(paths["workbook_path"], "value_bands", 0, "Mine", 12.0)
     before = paths["workbook_path"].read_bytes()
 
     def failing(tickers):
@@ -166,16 +189,14 @@ def test_auth_failure_leaves_the_existing_workbook_untouched(paths):
 
 
 def test_quota_failure_does_not_blank_the_workbook(paths):
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
+    run(paths)
 
     def over_quota(tickers):
         raise QuotaError("429")
 
     outcome = run(paths, when=NEXT_MONDAY, fetch=over_quota)
     assert outcome.written is False
-    assert read_existing(paths["workbook_path"]).scored_count > 0
+    assert len(read_existing(paths["workbook_path"]).universe) > 0
 
 
 def test_partial_fetch_is_labelled_and_lists_the_missing(paths):
@@ -190,7 +211,7 @@ def test_partial_fetch_is_labelled_and_lists_the_missing(paths):
 
 def test_corrupt_existing_workbook_aborts_without_writing(paths):
     paths["workbook_path"].write_bytes(b"not a spreadsheet")
-    with pytest.raises(ConvictionReadError):
+    with pytest.raises(WorkbookReadError):
         run(paths)
     assert paths["workbook_path"].read_bytes() == b"not a spreadsheet"
 
@@ -205,29 +226,81 @@ def test_empty_universe_is_refused_rather_than_producing_a_blank_file(paths):
 # --- History integration --------------------------------------------------------------
 
 
-def test_rank_movement_produces_alerts_on_the_second_run(paths):
-    """The alert v5.1 could never fire, because the data did not exist anywhere."""
-    from ajz.history import History
-    from ajz.calc import rank_stocks
+def test_a_big_score_move_produces_an_alert_on_the_second_run(paths):
+    """Jeff's rule: more than 25% on the AJZ Score. The alert v5.1 could never fire,
+    because the data did not exist anywhere in the workbook."""
+    import sqlite3
 
     run(paths)
-
-    # Rewrite last week's history so one stock appears to have climbed sharply.
     outcome = run(paths, when=NEXT_MONDAY, snapshot=False)
-    ranked = rank_stocks(outcome.stocks)
-    climber = ranked[0].ticker
+    subject = rank_stocks(outcome.stocks)[0].ticker
 
-    history = History(paths["history_path"])
-    import sqlite3
+    # Halve last week's stored score, so this week reads as a large climb.
     with sqlite3.connect(paths["history_path"]) as conn:
         conn.execute(
-            "UPDATE snapshots SET rank = 15 WHERE ticker = ? AND snapshot_date = ?",
-            (climber, MONDAY.date().isoformat()),
+            "UPDATE snapshots SET ajz_score = ajz_score / 2, "
+            "ajz_value_score = ajz_value_score / 2 "
+            "WHERE ticker = ? AND snapshot_date = ?",
+            (subject, MONDAY.date().isoformat()),
         )
 
     outcome = run(paths, when=NEXT_MONDAY)
-    moved = next(s for s in outcome.stocks if s.ticker == climber)
+    moved = next(s for s in outcome.stocks if s.ticker == subject)
     assert any(a.value == "UPGRADE" for a in moved.alerts)
+
+
+def test_the_movers_sheet_reports_that_move(paths):
+    """The sheet Jeff said "doesn't look like its updating" — because it was a stub that
+    never wrote a row no matter how many refreshes ran."""
+    import sqlite3
+    from ajz.history import History
+    from ajz.refresh import movement_report
+    from ajz.settings import DEFAULT_THRESHOLDS
+
+    run(paths)
+    outcome = run(paths, when=NEXT_MONDAY, snapshot=False)
+    subject = rank_stocks(outcome.stocks)[0].ticker
+
+    with sqlite3.connect(paths["history_path"]) as conn:
+        conn.execute(
+            "UPDATE snapshots SET ajz_score = ajz_score / 2, "
+            "ajz_value_score = ajz_value_score / 2 "
+            "WHERE ticker = ? AND snapshot_date = ?",
+            (subject, MONDAY.date().isoformat()),
+        )
+
+    report = movement_report(outcome.stocks, History(paths["history_path"]),
+                             NEXT_MONDAY.date(), DEFAULT_THRESHOLDS)
+    assert report["has_baseline"] is True
+    assert any(r["ticker"] == subject and r["what"] == "AJZ Score"
+               for r in report["rows"])
+
+
+def test_the_first_refresh_says_no_baseline_rather_than_no_movers(paths):
+    """"Nothing moved" and "I have nothing to compare against" are different claims,
+    and only one of them is true on a first run."""
+    from ajz.history import History
+    from ajz.refresh import movement_report
+    from ajz.settings import DEFAULT_THRESHOLDS
+
+    outcome = run(paths)
+    report = movement_report(outcome.stocks, History(paths["history_path"]),
+                             MONDAY.date(), DEFAULT_THRESHOLDS)
+    assert report["has_baseline"] is False
+    assert report["rows"] == []
+
+
+def test_a_quiet_week_reports_no_movers_with_a_baseline(paths):
+    from ajz.history import History
+    from ajz.refresh import movement_report
+    from ajz.settings import DEFAULT_THRESHOLDS
+
+    run(paths)
+    outcome = run(paths, when=NEXT_MONDAY)
+    report = movement_report(outcome.stocks, History(paths["history_path"]),
+                             NEXT_MONDAY.date(), DEFAULT_THRESHOLDS)
+    assert report["has_baseline"] is True
+    assert report["rows"] == []
 
 
 def test_history_survives_workbook_regeneration(paths):
@@ -244,42 +317,15 @@ def test_history_survives_workbook_regeneration(paths):
 def test_seeded_first_run_is_immediately_useful(paths):
     """REGRESSION (v5.1): Jeff's first open must not be an empty grid.
 
-    Without seeding, every stock reads 'Needs Conviction' and nothing is classified —
-    which is exactly the workbook Copilot handed him.
+    It no longer can be. Conviction was the one input he had to supply by hand before
+    anything was classified, and removing it means every stock the API returns is fully
+    categorised on the very first refresh, with nothing to fill in.
     """
-    from ajz.fixtures import sample_conviction
-
-    outcome = run(paths, seed_conviction=sample_conviction())
-    classified = [s for s in outcome.stocks if s.conviction_score is not None]
-    assert len(classified) >= 15
-    assert any(s.category.value == "Core Holding" for s in outcome.stocks)
-
-
-def test_seed_never_overrides_what_jeff_typed(paths):
-    """His edits are absolute. A seed may fill an empty file, never overwrite him."""
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
-    _set_conviction(paths["workbook_path"], "NVDA", [1, 1, 1, 1, 1])
-
-    outcome = run(paths, when=NEXT_MONDAY, seed_conviction=sample_conviction())
-
-    nvda = next(s for s in outcome.stocks if s.ticker == "NVDA")
-    assert nvda.conviction_score == 5, "the seed overwrote Jeff's own score"
-
-
-def test_jeff_can_clear_a_seeded_score_and_it_stays_cleared(paths):
-    """A seed that refilled gaps every run would make un-scoring impossible."""
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
-    _set_conviction(paths["workbook_path"], "NVDA", [None, None, None, None, None])
-
-    outcome = run(paths, when=NEXT_MONDAY, seed_conviction=sample_conviction())
-
-    nvda = next(s for s in outcome.stocks if s.ticker == "NVDA")
-    assert nvda.conviction_score is None
-    assert nvda.category.value == "Needs Conviction"
+    outcome = run(paths)
+    ranked = rank_stocks(outcome.stocks)
+    assert len(ranked) > 10
+    assert all(s.value_label for s in ranked)
+    assert all(s.score_label for s in ranked)
 
 
 # --- Settings round-trip (spec §6.5) --------------------------------------------------
@@ -298,40 +344,19 @@ def _set_setting(path, key, value):
     wb.save(path)
 
 
-def _category_of(outcome, ticker):
-    return next(s for s in outcome.stocks if s.ticker == ticker).category.value
+def _label_of(outcome, ticker):
+    return next(s for s in outcome.stocks if s.ticker == ticker).value_label
 
 
 def test_a_threshold_edit_survives_the_refresh(paths):
-    """His edit must still be there after the nightly rewrite, like conviction.
-
-    That it also *takes effect* is proved by the test below.
-    """
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
-    _set_setting(paths["workbook_path"], "strong_value", 3.0)
+    """His edit must still be there after the rewrite. That it also *takes effect* is
+    proved by test_an_edited_table_actually_changes_the_categories."""
+    run(paths)
+    _set_setting(paths["workbook_path"], "mover_pe_pct", 15.0)
 
     run(paths, when=NEXT_MONDAY)
 
-    assert read_existing(paths["workbook_path"]).settings["strong_value"] == 3.0
-
-
-def test_lowering_the_cutoff_makes_aggressive_reachable(paths):
-    """The live-data problem, solved by Jeff rather than by a code change.
-
-    HOOD scores ~3.6 with conviction 18. At the default cutoff of 7 it is a Defensive
-    Compounder; drop the cutoff below its score and it becomes the Aggressive Position
-    the bucket was designed for.
-    """
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
-    assert _category_of(run(paths, when=NEXT_MONDAY), "HOOD") == "Defensive Compounder"
-
-    _set_setting(paths["workbook_path"], "strong_value", 3.0)
-    outcome = run(paths, when=NEXT_MONDAY + timedelta(days=7))
-    assert _category_of(outcome, "HOOD") == "Aggressive Position"
+    assert read_existing(paths["workbook_path"]).settings["mover_pe_pct"] == 15.0
 
 
 def test_a_bad_setting_falls_back_without_stopping_the_refresh(paths):
@@ -344,33 +369,54 @@ def test_a_bad_setting_falls_back_without_stopping_the_refresh(paths):
     assert any("not a number" in w for w in outcome.warnings)
 
 
-def test_clearing_a_setting_restores_its_default(paths):
-    from ajz.fixtures import sample_conviction
+def test_a_bad_band_falls_back_without_stopping_the_refresh(paths):
+    run(paths)
+    _set_band(paths["workbook_path"], "score_bands", 0, "Legendary", "one fifty")
 
-    run(paths, seed_conviction=sample_conviction())
-    _set_setting(paths["workbook_path"], "strong_value", 3.0)
+    outcome = run(paths, when=NEXT_MONDAY)
+    assert outcome.written is True
+    assert any("not a number" in w for w in outcome.warnings)
+
+
+def test_clearing_a_setting_restores_its_default(paths):
+    run(paths)
+    _set_setting(paths["workbook_path"], "mover_pe_pct", 15.0)
     run(paths, when=NEXT_MONDAY)
 
-    _set_setting(paths["workbook_path"], "strong_value", None)
-    outcome = run(paths, when=NEXT_MONDAY + timedelta(days=7))
+    _set_setting(paths["workbook_path"], "mover_pe_pct", None)
+    run(paths, when=NEXT_MONDAY + timedelta(days=7))
 
-    # Back to the default cutoff of 7, so HOOD returns to Defensive.
-    assert _category_of(outcome, "HOOD") == "Defensive Compounder"
+    thresholds, _ = from_mapping(read_existing(paths["workbook_path"]).settings)
+    assert thresholds.mover_pe_pct == 10.0
 
 
-def test_settings_and_conviction_edits_coexist(paths):
+def test_clearing_a_whole_table_restores_the_shipped_one(paths):
+    """He must be able to get back to Jeff's own numbers without reinstalling."""
+    run(paths)
+    _set_band(paths["workbook_path"], "value_bands", 0, "Nonsense", 99.0)
+    run(paths, when=NEXT_MONDAY)
+
+    for index in range(8):
+        _set_band(paths["workbook_path"], "value_bands", index, None, None)
+    run(paths, when=NEXT_MONDAY + timedelta(days=7))
+
+    thresholds, _ = from_mapping(read_existing(paths["workbook_path"]).settings)
+    assert thresholds.value_bands == DEFAULT_THRESHOLDS.value_bands
+
+
+def test_settings_and_universe_edits_coexist(paths):
     """Both editable sheets must survive the same rewrite."""
-    from ajz.fixtures import sample_conviction
-
-    run(paths, seed_conviction=sample_conviction())
-    _set_setting(paths["workbook_path"], "strong_value", 4.0)
-    _set_conviction(paths["workbook_path"], "NET", [5, 4, 3, 2, 1])
+    run(paths)
+    _set_setting(paths["workbook_path"], "buy_value", 4.0)
+    _set_band(paths["workbook_path"], "score_bands", 0, "Untouchable", 200.0)
 
     run(paths, when=NEXT_MONDAY)
 
     saved = read_existing(paths["workbook_path"])
-    assert saved.settings["strong_value"] == 4.0
-    assert saved.conviction["NET"] == Conviction(5, 4, 3, 2, 1)
+    thresholds, _ = from_mapping(saved.settings)
+    assert thresholds.buy_value == 4.0
+    assert thresholds.score_bands.bands[0] == Band("Untouchable", 200.0)
+    assert len(saved.universe) > 10
 
 
 def test_a_workbook_without_a_settings_sheet_still_refreshes(paths):
@@ -382,3 +428,31 @@ def test_a_workbook_without_a_settings_sheet_still_refreshes(paths):
 
     outcome = run(paths, when=NEXT_MONDAY)
     assert outcome.written is True
+
+
+def test_a_falling_category_does_not_fire_an_upgrade(paths):
+    """REGRESSION (found on live data): a stock dropping a category fired both alerts."""
+    import sqlite3
+
+    run(paths)
+    outcome = run(paths, when=NEXT_MONDAY, snapshot=False)
+    subject = rank_stocks(outcome.stocks)[0].ticker
+
+    # Make last week's snapshot claim it sat in the very best band, so this week is a fall.
+    with sqlite3.connect(paths["history_path"]) as conn:
+        conn.execute(
+            "UPDATE snapshots SET category = 'Generational' "
+            "WHERE ticker = ? AND snapshot_date = ?",
+            (subject, MONDAY.date().isoformat()),
+        )
+        conn.execute(
+            "UPDATE snapshots SET ajz_score = ? WHERE ticker = ? AND snapshot_date = ?",
+            (next(s.ajz_score for s in outcome.stocks if s.ticker == subject),
+             subject, MONDAY.date().isoformat()),
+        )
+
+    outcome = run(paths, when=NEXT_MONDAY)
+    moved = next(s for s in outcome.stocks if s.ticker == subject)
+    values = {a.value for a in moved.alerts}
+    assert not ("UPGRADE" in values and "DOWNGRADE" in values), \
+        f"{subject} contradicts itself: {sorted(values)}"

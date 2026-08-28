@@ -1,13 +1,13 @@
 [project]
 name = "ajz-dashboard"
-version = "0.1.0"
+dynamic = ["version"]
 description = "AJZ Rule 3.0 investing dashboard — generates a single self-updating Excel file"
 requires-python = ">=3.12,<3.14"
 
 dependencies = [
-    # Workbook generation. Chosen over xlsxwriter because we must READ Jeff's
-    # hand-entered Conviction scores back out of the existing file before rewriting it
-    # (spec §7.3) — xlsxwriter is write-only.
+    # Workbook generation. Chosen over xlsxwriter because we must READ Jeff's edits —
+    # his universe and his category tables — back out of the existing file before
+    # rewriting it (spec §7.3); xlsxwriter is write-only.
     "openpyxl>=3.1",
     # HTTP for the FMP adapter (Phase 4). requests over httpx purely for PyInstaller
     # friendliness: we ship a frozen Windows binary and requests has the fewest
@@ -37,3 +37,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["ajz"]
+
+# Single source of truth: ajz/__init__.py. Keeps the package metadata, `--status`, and
+# the workbook footer from ever disagreeing about which version is running.
+[tool.hatch.version]
+path = "ajz/__init__.py"
+

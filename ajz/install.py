@@ -44,6 +44,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import __version__
 from .config import WORKBOOK_NAME, app_dir, desktop_dir
 
 log = logging.getLogger(__name__)
@@ -346,6 +347,9 @@ def status(install_dir: Path | None = None, shortcut_dir: Path | None = None) ->
     bat = desktop / LAUNCHER_NAME
 
     return {
+        # First line on purpose: when Jeff reports something odd, the first thing to
+        # establish is which build he is running.
+        "version": __version__,
         "platform": sys.platform,
         "install_dir": str(base),
         "install_dir_exists": base.exists(),

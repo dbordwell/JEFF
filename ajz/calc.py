@@ -4,7 +4,13 @@ Jeff's methodology, preserved exactly as written in `Spec Files/AI.docx`:
 
     AJZ Score       = (2 x RevenueGrowth%) + GrossMargin% + FCFMargin% + (0.5 x ROIC%)
     AJZ Value Score = AJZ Score / P/E
-    Conviction      = sum of five 1-5 scores
+    Forward P/E     = AJZ Score / AJZ Value Score
+
+Conviction was removed at Jeff's instruction in "Requested Changes for Items 2.1":
+"Get Rid Of Conviction Calculation and references to same throughout. It doesn't do
+anything and is subject to interpretation." It was Copilot's five-factor invention, not
+his framework. Everything it fed -- the Opportunity Matrix buckets, half of each alert
+rule -- now runs on the AJZ Value Score alone, which is what he calls the Primary Screen.
 
 Every function here is written to fail loudly or return None rather than emit a
 plausible-looking wrong number. That is a direct response to how v5.1 failed: it never
@@ -13,30 +19,12 @@ errored, it just quietly reported zeros that looked like "no data loaded yet".
 
 from __future__ import annotations
 
-from .models import Alert, Category, Conviction, ScoredStock, StockData
+from .models import Alert, ScoredStock, StockData
 from .settings import DEFAULT_THRESHOLDS, Thresholds
 
-# --- Band thresholds (spec §6) -------------------------------------------------------
-# Ordered high -> low; first match wins.
-AJZ_VALUE_BANDS: tuple[tuple[float, str], ...] = (
-    (15.0, "Elite"),
-    (10.0, "Excellent"),
-    (7.0, "Strong"),
-    (5.0, "Good"),
-    (3.0, "Fair"),
-    (float("-inf"), "Weak"),
-)
-
-CONVICTION_BANDS: tuple[tuple[int, str], ...] = (
-    (21, "Very High"),
-    (16, "High"),
-    (11, "Medium"),
-    (0, "Low"),
-)
-
-# Opportunity Matrix cutoffs (spec §6.1)
-# Legacy module-level constants kept for reference; the live values now come from
-# Thresholds (ajz/settings.py) so Jeff can tune them without a code change.
+# Band tables no longer live here. They are Jeff's, they change, and they are edited on
+# the Settings sheet -- see ajz/bands.py. Hardcoding them here is what made the previous
+# calibration a phone call instead of a cell edit.
 
 
 def ajz_score(
@@ -70,89 +58,61 @@ def ajz_value_score(score: float | None, pe_ratio: float | None) -> float | None
     return score / pe_ratio
 
 
-def ajz_rating(value_score: float | None) -> str | None:
-    """Heat-map band for an AJZ Value Score (spec §6)."""
-    if value_score is None:
-        return None
-    for floor, label in AJZ_VALUE_BANDS:
-        if value_score >= floor:
-            return label
-    return "Weak"  # unreachable: last band floor is -inf
-
-
-def conviction_rating(score: int | None) -> str | None:
-    """Band label for a conviction score (spec §6)."""
-    if score is None:
-        return None
-    for floor, label in CONVICTION_BANDS:
-        if score >= floor:
-            return label
-    return "Low"
-
-
-def opportunity_category(
-    value_score: float | None,
-    conviction_score: int | None,
-    thresholds: Thresholds = DEFAULT_THRESHOLDS,
-) -> Category:
-    """Opportunity Matrix bucket (spec §6.1).
-
-    Note the corrected Defensive Compounder rule. v5.1 required conviction >= 21 there,
-    which sent Low-AJZ + conviction 16-20 to "Avoid" even though Jeff's own scale calls
-    16-20 "High". A stock at AJZ 6 / conviction 20 was being told to Avoid when the
-    framework says Defensive Compounder.
-    """
-    if value_score is None:
-        return Category.NOT_RATED
-    if conviction_score is None:
-        return Category.UNSCORED
-
-    strong_value = value_score >= thresholds.strong_value
-    if strong_value and conviction_score >= thresholds.core_conviction:
-        return Category.CORE_HOLDING
-    if strong_value and conviction_score >= thresholds.aggressive_conviction:
-        return Category.AGGRESSIVE
-    if not strong_value and conviction_score >= thresholds.aggressive_conviction:
-        return Category.DEFENSIVE
-    return Category.AVOID
+def ajz_rating(
+    value_score: float | None, thresholds: Thresholds = DEFAULT_THRESHOLDS
+) -> str | None:
+    """Primary Screen category for an AJZ Value Score, from Jeff's editable table."""
+    return thresholds.value_bands.label_for(value_score)
 
 
 def alerts_for(
     value_score: float | None,
-    conviction_score: int | None,
-    rank_change: int | None = None,
-    entered_top_10: bool = False,
-    entered_core: bool = False,
+    score_moved_pct: float | None = None,
+    pe_moved_pct: float | None = None,
+    band_moved: int = 0,
     thresholds: Thresholds = DEFAULT_THRESHOLDS,
 ) -> tuple[Alert, ...]:
-    """Alert set for one row (spec §6.4).
+    """Alert set for one row.
 
-    History-dependent alerts (UPGRADE/DOWNGRADE) take their inputs as arguments rather
-    than reaching for a store, so this stays a pure function.
+    Reshaped to Jeff's v2.1 request. The old UPGRADE/DOWNGRADE pair keyed off places
+    moved in the ranking, which he never asked for; he asked for movement in the numbers
+    themselves -- "anything where the AJZ Score has moved more than 25% or the forward
+    P/E has moved more than 10%". Rank movement is noise when the universe changes size;
+    a 25% score move is a fact about the company.
+
+    `band_moved` is a direction, not a flag: +1 for a move to a better category, -1 for
+    worse, 0 for none. It was a bool, and a bool made a stock that fell from "Fair" to
+    "Expensive" fire UPGRADE and DOWNGRADE at once -- a row contradicting itself teaches
+    Jeff that the alert column is noise, which costs more than the missing alert would.
+
+    Movement inputs arrive as arguments rather than being fetched, so this stays pure.
     """
     if value_score is None:
         return ()
 
     found: list[Alert] = []
 
-    if (conviction_score is not None
-            and value_score > thresholds.buy_value
-            and conviction_score > thresholds.buy_conviction):
+    if value_score > thresholds.buy_value:
         found.append(Alert.BUY)
 
-    if rank_change is not None and rank_change >= thresholds.mover_places:
-        found.append(Alert.UPGRADE)
-    elif entered_top_10 or entered_core:
+    moved_up = (score_moved_pct is not None
+                and score_moved_pct >= thresholds.mover_score_pct)
+    moved_down = (score_moved_pct is not None
+                  and score_moved_pct <= -thresholds.mover_score_pct)
+    # A P/E move is directionally inverted: a cheaper stock is better news.
+    pe_up = pe_moved_pct is not None and pe_moved_pct <= -thresholds.mover_pe_pct
+    pe_down = pe_moved_pct is not None and pe_moved_pct >= thresholds.mover_pe_pct
+
+    if moved_up or pe_up or band_moved > 0:
         found.append(Alert.UPGRADE)
 
     if value_score < thresholds.warning_value:
         found.append(Alert.WARNING)
 
-    if (value_score < thresholds.exit_value and conviction_score is not None
-            and conviction_score < thresholds.exit_conviction):
+    if value_score < thresholds.exit_value:
         found.append(Alert.EXIT)
 
-    if rank_change is not None and rank_change <= -thresholds.mover_places:
+    if moved_down or pe_down or band_moved < 0:
         found.append(Alert.DOWNGRADE)
 
     return tuple(found)
@@ -160,14 +120,12 @@ def alerts_for(
 
 def score_stock(
     data: StockData,
-    conviction: Conviction | None = None,
-    rank_change: int | None = None,
-    entered_top_10: bool = False,
-    entered_core: bool = False,
+    score_moved_pct: float | None = None,
+    pe_moved_pct: float | None = None,
+    band_moved: int = 0,
     thresholds: Thresholds = DEFAULT_THRESHOLDS,
 ) -> ScoredStock:
     """Evaluate one ticker end to end. The main entry point of the calculation core."""
-    conviction = conviction or Conviction()
     notes: list[str] = []
 
     score = ajz_score(
@@ -193,21 +151,14 @@ def score_stock(
     if data.pe_basis is not None and data.pe_basis.value == "trailing":
         notes.append("Uses trailing P/E (no forward estimate available)")
 
-    cscore = conviction.score
-    if cscore is None and value is not None:
-        notes.append("Needs conviction scoring")
-
     return ScoredStock(
         data=data,
-        conviction=conviction,
         ajz_score=score,
         ajz_value_score=value,
-        ajz_rating=ajz_rating(value),
-        conviction_score=cscore,
-        conviction_rating=conviction_rating(cscore),
-        category=opportunity_category(value, cscore, thresholds),
-        alerts=alerts_for(value, cscore, rank_change, entered_top_10, entered_core,
-                          thresholds),
+        score_label=thresholds.score_bands.label_for(score),
+        pe_label=thresholds.pe_bands.label_for(data.pe_ratio),
+        value_label=thresholds.value_bands.label_for(value),
+        alerts=alerts_for(value, score_moved_pct, pe_moved_pct, band_moved, thresholds),
         notes=tuple(notes),
     )
 
@@ -229,32 +180,19 @@ def average_ajz_value(stocks: list[ScoredStock]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def average_conviction(stocks: list[ScoredStock]) -> float | None:
-    """Average conviction over stocks that actually have a conviction score."""
-    scores = [s.conviction_score for s in stocks if s.conviction_score is not None]
-    return sum(scores) / len(scores) if scores else None
-
-
 def portfolio_quality_index(stocks: list[ScoredStock]) -> float | None:
-    """Portfolio Quality Index (spec §6.3).
+    """Average AJZ Value Score normalised to 0-100.
 
-    Only the two components we genuinely compute, reweighted to sum to 100%.
-    v5.1 shipped `(0.4*avg) + (0.3*avg) + (0.2*80) + (0.1*90)` -- two hardcoded
-    constants contributing 25 fabricated points, so an empty workbook proudly
-    displayed an index of exactly 25.
-
-    Both components are normalised to 0-100 before weighting:
-      - AJZ Value: 15+ is "Elite", so 15 maps to 100.
-      - Conviction: max is 25, so 25 maps to 100.
+    v5.1 shipped `(0.4*avg) + (0.3*avg) + (0.2*80) + (0.1*90)` -- two hardcoded constants
+    contributing 25 fabricated points, so an empty workbook proudly displayed an index of
+    exactly 25. With conviction gone this is now a single honest component rather than a
+    weighted blend, so the weights disappear too: an average expressed as a percentage of
+    a 15.0 "Generational-plus" ceiling, and nothing else.
     """
     avg_value = average_ajz_value(stocks)
-    avg_conviction = average_conviction(stocks)
-    if avg_value is None or avg_conviction is None:
+    if avg_value is None:
         return None
-
-    value_component = min(avg_value / 15.0, 1.0) * 100
-    conviction_component = (avg_conviction / 25.0) * 100
-    return (0.60 * value_component) + (0.40 * conviction_component)
+    return min(avg_value / 15.0, 1.0) * 100
 
 
 # --- Units guard (spec §5.6) ---------------------------------------------------------
