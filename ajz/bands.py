@@ -63,6 +63,17 @@ class BandTable:
     name: str = field(compare=False)
     bands: tuple[Band, ...] = ()
 
+    # Does a bigger number mean a better stock? True for AJZ Score and AJZ Value Score,
+    # False for Forward P/E, where cheap is the good end.
+    #
+    # This exists only so the sheet can shade the best band most strongly. Every table is
+    # stored highest-floor-first regardless, so without it "Bubble" -- the most expensive
+    # thing on the sheet -- sat at row 0 and got painted as though it were the best.
+    #
+    # It is a property of the table, not of the rows: Jeff renames his categories and
+    # moves their floors, and none of that makes a high P/E good.
+    higher_is_better: bool = True
+
     def label_for(self, value: float | None) -> str | None:
         """The band a value falls in, or None if there is no value to categorise.
 
@@ -97,6 +108,16 @@ class BandTable:
                 ceiling = self.bands[index - 1].floor - 0.1
                 out.append(f"{_fmt(ceiling)} – {_fmt(band.floor)}")
         return out
+
+    def shade_index(self, label: str | None) -> int | None:
+        """Rank of a band for colouring, 0 being the best. None if it is not in the table.
+
+        Distinct from its position in `bands`, which is always ordered by floor.
+        """
+        for index, band in enumerate(self.bands):
+            if band.label == label:
+                return index if self.higher_is_better else len(self.bands) - 1 - index
+        return None
 
     def rows(self) -> list[tuple[str, float]]:
         """(label, floor) pairs for writing to the Settings sheet."""
@@ -155,15 +176,19 @@ class BandTable:
             seen[floor] = str(label).strip()
             bands.append(Band(str(label).strip(), floor))
 
+        # Direction comes from the table this one replaces, never from what Jeff typed.
+        # There is no cell on the sheet for it because there is no judgement in it.
+        higher_is_better = fallback.higher_is_better if fallback is not None else True
+
         if not bands:
             if fallback is not None:
                 return fallback, warnings
-            return cls(name, ()), warnings
+            return cls(name, (), higher_is_better), warnings
 
         # Sort rather than demand order: he may insert a row mid-table instead of
         # retyping it, and the order he leaves behind should not change the meaning.
         bands.sort(key=lambda b: -b.floor)
-        return cls(name, tuple(bands)), warnings
+        return cls(name, tuple(bands), higher_is_better), warnings
 
 
 # --- Jeff's tables, verbatim from 'Requested Changes for Items 2.1' -------------------
@@ -187,7 +212,7 @@ DEFAULT_SCORE_BANDS = BandTable("AJZ Score", (
 # Jeff wrote ">=15 | Cheap" at the foot of a table that otherwise reads downward with
 # "Bubble" at the top. Taken literally that would label every stock Cheap. Implemented to
 # his evident intent: 15 or below is cheap. Flagged to him rather than silently assumed.
-DEFAULT_PE_BANDS = BandTable("Forward P/E", (
+DEFAULT_PE_BANDS = BandTable("Forward P/E", higher_is_better=False, bands=(
     Band("Bubble", 120.0),
     Band("Ultra Speculative", 80.1),
     Band("Speculative", 60.1),

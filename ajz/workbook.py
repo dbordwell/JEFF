@@ -194,7 +194,7 @@ def _banded(ws: Worksheet, row: int, col: int, label: str | None,
     still says the right word, just without the shading.
     """
     cell = ws.cell(row=row, column=col, value=label or "—")
-    index = _band_index(table, label)
+    index = table.shade_index(label) if table is not None else None
     if index is None:
         _style_body(cell, bold=True, align="center", ink=theme.INK_MUTED)
         return
@@ -203,15 +203,6 @@ def _banded(ws: Worksheet, row: int, col: int, label: str | None,
     _style_body(cell, bold=True, align="center", ink=ink)
     if fill:
         cell.fill = _fill(fill)
-
-
-def _band_index(table: BandTable | None, label: str | None) -> int | None:
-    if table is None or label is None:
-        return None
-    for index, band in enumerate(table.bands):
-        if band.label == label:
-            return index
-    return None
 
 
 def _write_ranking_row(ws: Worksheet, row: int, s: ScoredStock,
@@ -280,7 +271,8 @@ def _build_matrix(ws: Worksheet, stocks: list[ScoredStock],
         ws.column_dimensions[get_column_letter(col)].width = 20
 
         head = ws.cell(row=5, column=col, value=band.label)
-        fill, ink = theme.band_style(index, len(bands))
+        fill, ink = theme.band_style(
+            thresholds.value_bands.shade_index(band.label) or 0, len(bands))
         head.fill = _fill(fill or theme.NEUTRAL_FILL)
         head.font = Font(name=theme.FONT, bold=True, size=12, color=ink)
         head.alignment = Alignment(horizontal="center", vertical="center")

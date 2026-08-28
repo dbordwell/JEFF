@@ -184,3 +184,34 @@ def test_a_band_with_a_floor_but_no_label_is_dropped():
     table, warnings = BandTable.from_rows("Test", rows)
     assert [b.label for b in table.bands] == ["High", "Low"]
     assert len(warnings) == 1
+
+
+# --- Which end of a table is the good end ---------------------------------------------
+
+
+def test_most_tables_read_best_first():
+    """AJZ Score and AJZ Value both improve as the number rises, so the top row is best."""
+    assert DEFAULT_SCORE_BANDS.shade_index("Legendary") == 0
+    assert DEFAULT_VALUE_BANDS.shade_index("Generational") == 0
+
+
+def test_forward_pe_reads_best_last():
+    """REGRESSION: a low P/E is the good one, but the table is ordered high-to-low like
+    the others -- so shading by row position painted "Bubble" in the strongest colour and
+    left "Cheap" with no fill at all. The most expensive stock on the sheet looked like
+    the best thing on it."""
+    assert DEFAULT_PE_BANDS.shade_index("Cheap") == 0
+    assert DEFAULT_PE_BANDS.shade_index("Bubble") == len(DEFAULT_PE_BANDS.bands) - 1
+
+
+def test_shade_index_is_none_for_a_label_that_is_not_in_the_table():
+    assert DEFAULT_PE_BANDS.shade_index("Nonsense") is None
+    assert DEFAULT_PE_BANDS.shade_index(None) is None
+
+
+def test_direction_survives_an_edit_because_it_belongs_to_the_table_not_the_rows():
+    """Jeff renames and re-floors his P/E categories; none of that makes a high P/E good."""
+    rows = [("Silly money", 100.0), ("Sensible", 10.0)]
+    table, _ = BandTable.from_rows("Forward P/E", rows, fallback=DEFAULT_PE_BANDS)
+    assert table.higher_is_better is False
+    assert table.shade_index("Sensible") == 0
