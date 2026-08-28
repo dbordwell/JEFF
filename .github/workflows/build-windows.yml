@@ -111,14 +111,37 @@ jobs:
         # upgrade path is the install path run twice. Nothing is versioned - the exe is
         # overwritten in place and the shortcut has a fixed name - so this proves there
         # is no second copy, no duplicate icon, and nothing of his is deleted.
+        #
+        # NO --install flag, for the same reason the step above has none. This step used
+        # to pass one, which is a gesture a double-click cannot make, and it hid a real
+        # upgrade bug: already-configured machines routed a freshly downloaded build
+        # straight to refresh, so the exe was never replaced and the desktop shortcut
+        # kept pointing at the old version. Green here, broken on his PC.
+        #
+        # It runs from dist\ rather than the install directory, which is what makes it
+        # an upgrade: that is where a download lands.
         run: |
           $appDir = Join-Path $env:LOCALAPPDATA 'AJZ'
           Set-Content -Path (Join-Path $appDir 'history.sqlite') -Value 'the whole series' -Encoding ascii
           New-Item -ItemType Directory -Force -Path (Join-Path $appDir 'backups') | Out-Null
           Set-Content -Path (Join-Path $appDir 'backups\2026-08-24.xlsx') -Value 'yesterday' -Encoding ascii
 
-          .\dist\ajz-refresh.exe --install
-          if ($LASTEXITCODE -ne 0) { throw "reinstall exited $LASTEXITCODE" }
+          # Stand in for "the previously installed version". Both builds in this job are
+          # byte-identical, so without a marker a no-op upgrade would pass by leaving the
+          # old copy sitting there. Replacing it first means the assertion below can only
+          # pass if the running exe genuinely copied itself over the top.
+          $installed = Join-Path $appDir 'ajz-refresh.exe'
+          Set-Content -Path $installed -Value 'pretend this is the old version' -Encoding ascii
+
+          .\dist\ajz-refresh.exe
+          if ($LASTEXITCODE -ne 0) { throw "double-clicking the upgrade exited $LASTEXITCODE" }
+
+          if (-not (Test-Path $installed)) { throw "no program in the install directory" }
+          $expected = (Get-FileHash '.\dist\ajz-refresh.exe').Hash
+          $actual   = (Get-FileHash $installed).Hash
+          if ($actual -ne $expected) {
+            throw "the installed program was not replaced: still $actual, expected $expected"
+          }
 
           if ((Get-Content (Join-Path $appDir 'history.sqlite')) -ne 'the whole series') {
             throw "the history series was not preserved across an upgrade"
@@ -130,6 +153,12 @@ jobs:
           $icons = @(Get-ChildItem ([Environment]::GetFolderPath('Desktop')) -Filter 'AJZ Dashboard*.lnk')
           Write-Host "desktop icons after upgrade: $($icons.Count)"
           if ($icons.Count -ne 1) { throw "expected exactly one shortcut, found $($icons.Count)" }
+
+          # The shortcut must still point into the install directory, not at the
+          # download it was just upgraded from - Downloads gets emptied.
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($icons[0].FullName).TargetPath
+          Write-Host "shortcut target after upgrade: $target"
+          if ($target -notlike '*\AJZ\ajz-refresh.exe') { throw "shortcut points at $target" }
 
       - uses: actions/upload-artifact@v4
         with:

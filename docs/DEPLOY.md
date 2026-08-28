@@ -95,8 +95,16 @@ v2.0 is the first release that **removes** a sheet. Jeff asked for Conviction to
 ("it doesn't do anything and is subject to interpretation"), and it takes the Opportunity
 Matrix's second axis and half of every alert rule with it.
 
-He upgrades the same way he installed: run the new setup over the old install. No manual
-step, nothing to migrate, and his Universe and Settings edits carry across untouched.
+He upgrades the same way he installed: download the new **AJZ-Setup.exe** and double-click
+it. No manual step, nothing to migrate, and his Universe and Settings edits carry across.
+
+He does **not** need the emailed `config.json` again — the key is already in
+`%LOCALAPPDATA%\AJZ\`. That file is a first-install requirement only.
+
+There is no exe on his desktop to swap out: the desktop item is a shortcut pointing into
+`%LOCALAPPDATA%\AJZ\`. Dropping a new build there by hand would work, but it means
+navigating to a hidden folder — double-clicking the download is strictly less fiddly, and
+it re-points the shortcut as well.
 
 One thing happens automatically and only once. His five conviction scores — NVDA 24,
 TSM 25, AVGO 23, BE 18, HOOD 18 — were hand-entered judgements no API can regenerate, so

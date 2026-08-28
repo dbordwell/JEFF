@@ -117,12 +117,65 @@ def test_double_clicking_before_setup_installs_rather_than_failing(tmp_path, mon
 def test_double_clicking_after_setup_refreshes(tmp_path, monkeypatch):
     """Once installed, the same gesture must mean "give me current numbers"."""
     monkeypatch.setattr(cli, "_is_set_up", lambda: True)
+    monkeypatch.setattr(cli, "_is_the_installed_exe", lambda: True)
     chosen = []
     monkeypatch.setattr(cli, "_do_install", lambda args: chosen.append("install") or 0)
     monkeypatch.setattr(cli, "_do_refresh", lambda args: chosen.append("refresh") or 0)
 
     cli._main([])
     assert chosen == ["refresh"]
+
+
+def test_double_clicking_a_downloaded_upgrade_installs_rather_than_just_refreshing(
+        tmp_path, monkeypatch):
+    """The upgrade gesture, and the same bug as the one above wearing a different hat.
+
+    Jeff is already set up, so routing on "is it set up?" alone sends a freshly
+    downloaded build straight to refresh. It produces a correct workbook once, never
+    copies itself into %LOCALAPPDATA%, and leaves the desktop shortcut pointing at the
+    OLD program — which then cannot read the new workbook at all.
+
+    Routing on "am I the installed program?" instead covers install, upgrade and daily
+    refresh with one rule and no version numbers.
+    """
+    monkeypatch.setattr(cli, "_is_set_up", lambda: True)
+    monkeypatch.setattr(cli, "_is_the_installed_exe", lambda: False)
+    chosen = []
+    monkeypatch.setattr(cli, "_do_install", lambda args: chosen.append("install") or 0)
+    monkeypatch.setattr(cli, "_do_refresh", lambda args: chosen.append("refresh") or 0)
+
+    cli._main([])
+    assert chosen == ["install"]
+
+
+def test_running_from_source_is_never_treated_as_an_upgrade(monkeypatch):
+    """`python -m ajz` is not a frozen exe and has no business copying itself anywhere."""
+    monkeypatch.setattr(cli.sys, "frozen", False, raising=False)
+    assert cli._is_the_installed_exe() is True
+
+
+def test_the_installed_exe_recognises_itself(tmp_path, monkeypatch):
+    exe = tmp_path / "ajz-refresh.exe"
+    exe.write_bytes(b"x")
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", str(exe), raising=False)
+    monkeypatch.setattr("ajz.config.app_dir", lambda: tmp_path)
+    assert cli._is_the_installed_exe() is True
+
+
+def test_a_copy_in_downloads_knows_it_is_not_the_installed_exe(tmp_path, monkeypatch):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    downloaded = downloads / "AJZ-Setup.exe"
+    downloaded.write_bytes(b"x")
+    installed = tmp_path / "AJZ"
+    installed.mkdir()
+    (installed / "ajz-refresh.exe").write_bytes(b"x")
+
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(cli.sys, "executable", str(downloaded), raising=False)
+    monkeypatch.setattr("ajz.config.app_dir", lambda: installed)
+    assert cli._is_the_installed_exe() is False
 
 
 def test_set_up_is_judged_by_the_installed_key(tmp_path, monkeypatch):

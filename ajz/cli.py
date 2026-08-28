@@ -130,13 +130,22 @@ def _main(argv: list[str] | None = None) -> int:
         return 0 if ok else 1
 
     # A double-click cannot pass a flag, so the no-argument path has to be whichever
-    # action makes sense on this machine. Before setup that is "install"; after it,
-    # "refresh". Requiring --install meant double-clicking the downloaded setup file
-    # ran a refresh instead, which failed with "not set up yet" and closed instantly —
-    # and could never succeed, because refresh only looks for the key in
-    # %LOCALAPPDATA%, never beside the exe. Every instruction we wrote said
-    # "double-click it", so that is what has to work.
-    if args.install or not _is_set_up():
+    # action makes sense on this machine. There are three gestures and they all arrive
+    # here identically:
+    #
+    #   1. First install   — downloaded exe, nothing set up yet          -> install
+    #   2. Upgrade         — downloaded exe, already set up              -> install
+    #   3. Daily refresh   — the desktop shortcut, i.e. the installed exe -> refresh
+    #
+    # Routing on "is this machine set up?" alone gets (2) wrong: a freshly downloaded
+    # build would refresh, produce one correct workbook, and never copy itself into
+    # place — leaving the desktop shortcut pointing at the previous version, which then
+    # cannot read the workbook the new one just wrote.
+    #
+    # "Am I the installed program?" separates all three with one question and no version
+    # numbers to keep in step. Setup is idempotent, so running it on an upgrade costs a
+    # file copy and re-points the shortcut, which is exactly what an upgrade is.
+    if args.install or not _is_set_up() or not _is_the_installed_exe():
         return _do_install(args)
 
     return _do_refresh(args)
@@ -149,6 +158,26 @@ def _is_set_up() -> bool:
     if os.environ.get(ENV_VAR, "").strip():
         return True
     return (app_dir() / "config.json").exists()
+
+
+def _is_the_installed_exe() -> bool:
+    """Are we the copy living in the install directory, or one Jeff just downloaded?
+
+    Only meaningful for the frozen Windows binary. Running from source (`python -m ajz`)
+    answers True: a source checkout is nobody's idea of an upgrade, and answering False
+    would make every developer run try to install itself.
+    """
+    if not getattr(sys, "frozen", False):
+        return True
+    from .config import app_dir
+    from .install import EXE_NAME
+
+    try:
+        return Path(sys.executable).resolve() == (app_dir() / EXE_NAME).resolve()
+    except OSError:
+        # An unresolvable path is not evidence of an upgrade. Prefer the quiet answer:
+        # a needless refresh is recoverable, a needless install rewrites the shortcut.
+        return True
 
 
 def _do_refresh(args) -> int:

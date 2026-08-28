@@ -1,8 +1,12 @@
 # AJZ v2.0 — your changes, built
 
-Hi Jeff — everything on your "Requested Changes for Items 2.1" list is in. Click
-**AJZ Dashboard** on your desktop and it fetches the latest figures and opens the updated
-file, same as before.
+Hi Jeff — everything on your "Requested Changes for Items 2.1" list is in.
+
+**To update:** download the new **AJZ-Setup.exe** and double-click it. That is the whole
+thing — you don't need the config file again, and there's nothing to uninstall first.
+Your watchlist and any settings you've changed carry across.
+
+After that, click **AJZ Dashboard** on your desktop as usual.
 
 ## What changed
 
