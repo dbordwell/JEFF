@@ -1,6 +1,16 @@
-# AJZ v2.0 — your changes, built
+# AJZ v2.1 — the colour problems, fixed
 
-Hi Jeff — everything on your "Requested Changes for Items 2.1" list is in.
+Hi Jeff — both things you flagged about the colours are sorted, and the fix for the
+second one turned into something better than putting your formatting back.
+
+**Short version:**
+
+1. **The Forward P/E colours were backwards.** A real bug, and worth knowing about
+   because the colour was telling you the opposite of what the number said.
+2. **Your colour-coding didn't save.** Our fault, not yours — and now the colours you
+   pick don't just stick, they drive the whole workbook.
+
+Everything from v2.0 below that, unchanged, in case you want it again.
 
 **To update:** download the new **AJZ-Setup.exe** and double-click it. That is the whole
 thing. It doesn't matter which folder you run it from, you don't need the config file
@@ -8,6 +18,56 @@ again, and there's nothing to uninstall first. Your watchlist and any settings y
 changed carry across.
 
 After that, click **AJZ Dashboard** on your desktop as usual.
+
+## 1. Forward P/E was shaded the wrong way round
+
+This one was a genuine bug and you found it without knowing you had.
+
+The shading is meant to run strongest-colour-for-best down to no-colour-for-worst. That
+works for AJZ Score and AJZ Value, where a bigger number is better. Forward P/E runs the
+other way — cheap is the good end — and we had it painting the *expensive* end as though
+it were the best.
+
+So CRWD at 176x and NET at 240x were sitting in the strongest blue on the sheet, and
+"Cheap" had no colour at all. If you'd been reading down that column by colour, it was
+pointing you at exactly the wrong stocks. Now "Cheap" is the strong end and "Bubble" is
+the pale one.
+
+## 2. Your colour-coding, and what it now does
+
+You coloured the category names in column A of Settings to make the tables easier to
+read, saved, and the refresh wiped them.
+
+That was our fault. The workbook gets rebuilt from scratch every refresh — that's what
+stops it drifting into a half-updated state, and it's why the old file's `#REF!` errors
+can't happen here. But it means anything we don't deliberately save off your sheet gets
+destroyed. We'd already learned that with your category tables and fixed it for the words
+and the numbers. We never thought about the formatting.
+
+Rather than just put your colours back, we made them the point:
+
+> **Fill a category's name cell with a colour, and that category takes that colour
+> everywhere it appears** — the Top Rankings columns and the Opportunity Matrix headers,
+> not just the Settings sheet.
+
+Your three tables are now the legend for the whole workbook. A few notes:
+
+- **Any colour in Excel's picker works**, including the theme colours along the top row.
+- **The text colour looks after itself.** Pick something dark and the writing turns white.
+- **Leave a cell alone and nothing changes** — it keeps our shading, which still runs
+  best-to-worst and re-spaces itself when you add or remove a category.
+- **To go back to ours,** clear the fill: Home → Fill Colour → No Fill.
+
+This also answers the other half of what you said. The three category columns all came
+out in much the same blue, which makes them blur together when you read across. Give AJZ
+Score, Forward P/E and AJZ Value their own colour families and they separate immediately.
+That's now yours to set rather than ours to guess.
+
+---
+
+# Everything below is from v2.0
+
+Unchanged — repeated here so you have it all in one place.
 
 ## What changed
 
@@ -57,29 +117,6 @@ Elite                       100    119.9 – 100               3
 
 You never have to keep the ranges lined up. You only ever set where a category *starts*,
 so there's no way to leave a gap that a stock could fall through.
-
-## Your colours now stick
-
-You coloured the category names in column A to make the tables easier to read, and the
-refresh wiped them. That was our fault — the workbook gets rebuilt from scratch every
-time, and we were only saving the words and the numbers off that sheet, not the
-formatting.
-
-It saves the colour now, and it does more than put it back:
-
-**Fill a category's name cell with a colour and that category takes that colour
-everywhere it appears** — the Top Rankings columns and the Opportunity Matrix headers,
-not just the Settings sheet. The category tables are the legend for the whole workbook.
-
-- Any colour in Excel's picker works, including the theme colours across the top row.
-- The text colour looks after itself. Pick something dark and the writing turns white.
-- Leave a cell alone and it keeps the shading we chose, which still runs dark-to-light
-  best-to-worst and re-spaces itself when you add or remove a category.
-- To go back to ours, clear the fill (Home → Fill Colour → No Fill).
-
-This also answers the other thing you flagged — the three category columns all coming out
-in the same blue. Give AJZ Score, Forward P/E and AJZ Value their own colour families and
-they stop blurring together. That's yours to set now rather than ours.
 
 ## We widened the list to 50
 
