@@ -28,6 +28,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from . import theme
+from .palette import resolve_fill
 from .settings import TABLE_END, TABLE_PREFIX
 
 CONVICTION_SHEET = "Conviction"  # legacy; read once to archive, never written
@@ -259,6 +261,20 @@ def _cell(row, index: int):
     return row[index].value if len(row) > index else None
 
 
+def _band_colour(wb, row) -> str | None:
+    """The colour Jeff filled a band's name cell with, or None for "use our ramp".
+
+    Our own seed colour reads back as None on purpose -- see `theme.is_ramp_colour`.
+    Anything we cannot resolve to a real colour is also None: a band that keeps its old
+    shading is a non-event, whereas a band painted a colour he did not choose is us
+    making a claim about his own categories that he never made.
+    """
+    if not row:
+        return None
+    colour = resolve_fill(row[0], wb)
+    return None if theme.is_ramp_colour(colour) else colour
+
+
 def _read_settings_sheet(wb, warnings: list[str]) -> dict[str, object]:
     """Read Jeff's settings edits: scalar values and his three category tables.
 
@@ -282,7 +298,7 @@ def _read_settings_sheet(wb, warnings: list[str]) -> dict[str, object]:
 
     ws = wb[SETTINGS_SHEET]
     out: dict[str, object] = {}
-    table_rows: list[tuple[object, object]] | None = None
+    table_rows: list[tuple[object, object, str | None]] | None = None
     skip_header = False
 
     for row in ws.iter_rows(min_row=2):
@@ -306,7 +322,7 @@ def _read_settings_sheet(wb, warnings: list[str]) -> dict[str, object]:
             label, floor = _cell(row, 0), _cell(row, 1)
             if (label is None or not str(label).strip()) and floor is None:
                 continue  # an unused spare row
-            table_rows.append((label, floor))
+            table_rows.append((label, floor, _band_colour(wb, row)))
             continue
 
         if not marker:

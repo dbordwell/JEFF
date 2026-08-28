@@ -24,7 +24,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
-from . import __version__, theme
+from . import __version__, palette, theme
 from .bands import BandTable
 from .calc import rank_stocks
 from .models import ScoredStock
@@ -185,21 +185,36 @@ def _build_rankings(ws: Worksheet, stocks: list[ScoredStock],
     _protect(ws)
 
 
-def _banded(ws: Worksheet, row: int, col: int, label: str | None,
-            table: BandTable | None = None) -> None:
-    """A category cell: the word, shaded by the band's position, never colour alone.
+def _band_paint(table: BandTable | None, label: str | None) -> tuple[str | None, str]:
+    """(fill, ink) for a band: Jeff's own colour if he set one, otherwise our ramp.
 
-    Position rather than name, because Jeff owns the names and changes them. Passing the
-    table is what lets a renamed band keep its place in the ramp; without it the cell
-    still says the right word, just without the shading.
+    The single place colour is decided, so the Settings legend, the Top Rankings columns
+    and the Opportunity Matrix cannot drift apart. That mattered as soon as he started
+    picking colours: three surfaces each computing their own shading is three chances for
+    the same category to appear in three different colours.
+
+    Ink follows the fill rather than being chosen alongside it, because he picks the fill
+    and nobody should have to also pick readable text to go on it.
     """
-    cell = ws.cell(row=row, column=col, value=label or "—")
     index = table.shade_index(label) if table is not None else None
     if index is None:
-        _style_body(cell, bold=True, align="center", ink=theme.INK_MUTED)
-        return
+        return None, theme.INK_MUTED
 
-    fill, ink = theme.band_style(index, len(table.bands))
+    band = table.band_for(label)
+    if band is not None and band.color:
+        return band.color, palette.ink_for(band.color)
+    return theme.band_style(index, len(table.bands))
+
+
+def _banded(ws: Worksheet, row: int, col: int, label: str | None,
+            table: BandTable | None = None) -> None:
+    """A category cell: the word, shaded by its band, never colour alone.
+
+    Passing the table is what lets a renamed band keep its shading; without it the cell
+    still says the right word, just without the colour.
+    """
+    cell = ws.cell(row=row, column=col, value=label or "—")
+    fill, ink = _band_paint(table, label)
     _style_body(cell, bold=True, align="center", ink=ink)
     if fill:
         cell.fill = _fill(fill)
@@ -271,8 +286,7 @@ def _build_matrix(ws: Worksheet, stocks: list[ScoredStock],
         ws.column_dimensions[get_column_letter(col)].width = 20
 
         head = ws.cell(row=5, column=col, value=band.label)
-        fill, ink = theme.band_style(
-            thresholds.value_bands.shade_index(band.label) or 0, len(bands))
+        fill, ink = _band_paint(thresholds.value_bands, band.label)
         head.fill = _fill(fill or theme.NEUTRAL_FILL)
         head.font = Font(name=theme.FONT, bold=True, size=12, color=ink)
         head.alignment = Alignment(horizontal="center", vertical="center")
@@ -464,7 +478,9 @@ def _build_settings(ws: Worksheet, stocks: list[ScoredStock],
 
     intro = ws.cell(row=1, column=6,
                     value="Change anything in the shaded columns and it takes effect at "
-                          "the next refresh. Clear a cell to restore its default.")
+                          "the next refresh. Clear a cell to restore its default. "
+                          "Fill a category name cell with a colour and that category "
+                          "takes the colour everywhere it appears.")
     intro.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_SECONDARY)
 
     positive = DataValidation(
@@ -526,7 +542,8 @@ def _write_band_table(ws: Worksheet, row: int, attr: str, title: str,
     ws.cell(row=row, column=4, value=f"{TABLE_PREFIX}{attr}")
     row += 1
 
-    for col, label in enumerate(["Category name", "Starts at", "Range (automatic)",
+    for col, label in enumerate(["Category name — fill the cell to set its colour",
+                                 "Starts at", "Range (automatic)",
                                  None, "Stocks now"], start=1):
         if label is None:
             continue
@@ -548,10 +565,19 @@ def _write_band_table(ws: Worksheet, row: int, attr: str, title: str,
     # Real bands, then blank spares. Excel refuses to insert a row into a protected
     # sheet, so spares are how he adds a category; the reader sorts by floor, so it does
     # not matter that the only free rows are at the bottom.
-    entries = list(table.rows()) + [(None, None)] * SPARE_BAND_ROWS
-    for label, floor in entries:
+    entries = list(table.rows()) + [(None, None, None)] * SPARE_BAND_ROWS
+    for label, floor, _colour in entries:
         name = ws.cell(row=row, column=1, value=label)
-        _style_body(name)
+        # Seeded with the colour this band currently shows, so the table doubles as the
+        # legend for the whole workbook: he can see what each category looks like on the
+        # sheets that use it, and change it by filling the cell. That is what he tried to
+        # do unprompted, and it is the right place for it -- the categories are defined
+        # here, so their colours should be too. Spare rows stay unfilled; a band typed
+        # into one picks up the ramp until he says otherwise.
+        fill, ink = _band_paint(table, label)
+        _style_body(name, ink=ink if fill else theme.INK_PRIMARY)
+        if fill:
+            name.fill = _fill(fill)
         name.protection = Protection(locked=False)
 
         value = ws.cell(row=row, column=2, value=floor)

@@ -32,6 +32,16 @@ class Band:
     label: str
     floor: float
 
+    # The colour Jeff filled this band's name cell with on the Settings sheet, as ARGB,
+    # or None to use our ramp. He reached for this himself -- he colour-coded the
+    # category names to make the tables visual, and the refresh threw it away because
+    # nothing we do not read back survives a rebuild. So we read it back.
+    #
+    # Excluded from equality for the same reason `name` is: two tables that sort stocks
+    # identically ARE the same table. Colour is presentation, and a test asserting that
+    # his bands parsed correctly should not fail because a swatch differs.
+    color: str | None = field(default=None, compare=False)
+
 
 def _fmt(number: float) -> str:
     """Render a floor the way Jeff wrote it: 150, not 150.0; 10.1 stays 10.1."""
@@ -119,15 +129,24 @@ class BandTable:
                 return index if self.higher_is_better else len(self.bands) - 1 - index
         return None
 
-    def rows(self) -> list[tuple[str, float]]:
-        """(label, floor) pairs for writing to the Settings sheet."""
-        return [(b.label, b.floor) for b in self.bands]
+    def rows(self) -> list[tuple[str, float, str | None]]:
+        """(label, floor, colour) triples for writing to the Settings sheet."""
+        return [(b.label, b.floor, b.color) for b in self.bands]
+
+    def band_for(self, label: str | None) -> Band | None:
+        """The band carrying a label, or None. Used to find its colour when shading."""
+        if label is None:
+            return None
+        for band in self.bands:
+            if band.label == label:
+                return band
+        return None
 
     @classmethod
     def from_rows(
         cls,
         name: str,
-        rows: list[tuple[object, object]],
+        rows: list[tuple[object, ...]],
         fallback: BandTable | None = None,
     ) -> tuple[BandTable, list[str]]:
         """Build a table from what Jeff typed. Never raises.
@@ -140,7 +159,12 @@ class BandTable:
         bands: list[Band] = []
         seen: dict[float, str] = {}
 
-        for label, raw_floor in rows:
+        for row in rows:
+            # Rows arrive as (label, floor) or (label, floor, colour). The colour is
+            # optional because it did not exist before v2.2 and because a caller that
+            # does not care about presentation should not have to supply one.
+            label, raw_floor = row[0], row[1]
+            colour = row[2] if len(row) > 2 else None
             blank_label = label is None or not str(label).strip()
             blank_floor = raw_floor is None or (
                 isinstance(raw_floor, str) and not raw_floor.strip())
@@ -174,7 +198,7 @@ class BandTable:
                 continue
 
             seen[floor] = str(label).strip()
-            bands.append(Band(str(label).strip(), floor))
+            bands.append(Band(str(label).strip(), floor, colour))
 
         # Direction comes from the table this one replaces, never from what Jeff typed.
         # There is no cell on the sheet for it because there is no judgement in it.

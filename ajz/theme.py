@@ -76,6 +76,25 @@ def band_style(index: int, total: int) -> tuple[str | None, str]:
     return _RAMP[min(step, len(_RAMP) - 1)]
 
 
+_RAMP_FILLS = frozenset(fill for fill, _ink in _RAMP if fill)
+
+
+def is_ramp_colour(argb: str | None) -> bool:
+    """Is this one of ours, rather than one Jeff chose?
+
+    The Settings sheet seeds each category name cell with the colour that band currently
+    shows, so that the table doubles as the legend and he can see what he is overriding.
+    The cost of seeding is that the read-back cannot tell a colour he picked from one we
+    put there -- and if it cannot, our ramp freezes: it stretches to fit the number of
+    bands, so it must stay free to re-stretch when he adds one.
+
+    Reading our own seed back as "unset" is what keeps it free. The ramp values are
+    hand-mixed hex that appear nowhere in Excel's picker, so the only realistic way one
+    of them reaches this function is that we wrote it.
+    """
+    return bool(argb) and argb.upper() in _RAMP_FILLS
+
+
 
 # --- 2. Status palette (reserved; never used for categories) --------------------------
 STATUS_GOOD = _argb("0ca30c")

@@ -58,6 +58,29 @@ Elite                       100    119.9 – 100               3
 You never have to keep the ranges lined up. You only ever set where a category *starts*,
 so there's no way to leave a gap that a stock could fall through.
 
+## Your colours now stick
+
+You coloured the category names in column A to make the tables easier to read, and the
+refresh wiped them. That was our fault — the workbook gets rebuilt from scratch every
+time, and we were only saving the words and the numbers off that sheet, not the
+formatting.
+
+It saves the colour now, and it does more than put it back:
+
+**Fill a category's name cell with a colour and that category takes that colour
+everywhere it appears** — the Top Rankings columns and the Opportunity Matrix headers,
+not just the Settings sheet. The category tables are the legend for the whole workbook.
+
+- Any colour in Excel's picker works, including the theme colours across the top row.
+- The text colour looks after itself. Pick something dark and the writing turns white.
+- Leave a cell alone and it keeps the shading we chose, which still runs dark-to-light
+  best-to-worst and re-spaces itself when you add or remove a category.
+- To go back to ours, clear the fill (Home → Fill Colour → No Fill).
+
+This also answers the other thing you flagged — the three category columns all coming out
+in the same blue. Give AJZ Score, Forward P/E and AJZ Value their own colour families and
+they stop blurring together. That's yours to set now rather than ours.
+
 ## We widened the list to 50
 
 Your 24 are all still there. We added 26 more — bigger names across more sectors, so the

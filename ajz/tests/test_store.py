@@ -14,7 +14,9 @@ from datetime import datetime
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import PatternFill
 
+from ajz import theme
 from ajz.bands import DEFAULT_SCORE_BANDS
 from ajz.fixtures import sample_stocks
 from ajz.settings import DEFAULT_THRESHOLDS, from_mapping
@@ -294,3 +296,106 @@ def test_atomic_save_does_not_corrupt_the_target_on_failure(live_file, monkeypat
 
     assert len(read_existing(live_file).universe) == original
     assert not live_file.with_suffix(".xlsx.tmp").exists()
+
+
+# --- The colour round-trip ------------------------------------------------------------
+#
+# Jeff colour-coded the category names on the Settings sheet to make the tables visual,
+# saved, and refreshed. The colours were gone -- the workbook is rebuilt from nothing on
+# every refresh, so anything not explicitly read back is destroyed. He had found the same
+# trap once before with his hand-entered tables. These tests are the fence around it.
+
+
+def _fill_band_name(path, attr, offset, argb):
+    """Simulate Jeff filling a category name cell with a colour."""
+    ws, start, _end = _band_rows(path, attr)
+    ws.cell(row=start + offset, column=1).fill = PatternFill("solid", fgColor=argb)
+    ws.parent.save(path)
+
+
+def test_a_colour_jeff_puts_on_a_category_survives_the_refresh(live_file):
+    """The bug he reported, stated as a test."""
+    _fill_band_name(live_file, "score_bands", 0, "FFB7791F")
+
+    thresholds, warnings = from_mapping(read_existing(live_file).settings)
+
+    assert warnings == []
+    assert thresholds.score_bands.band_for("Legendary").color == "FFB7791F"
+
+
+def test_an_untouched_sheet_reports_no_colours(live_file):
+    """The seeded legend must read back as unset.
+
+    The Settings sheet is seeded with each band's current colour so it doubles as the
+    legend. If the reader could not tell that seed from a choice of Jeff's, our ramp
+    would freeze on the first refresh and stop re-stretching when he adds a category.
+    """
+    thresholds, _warnings = from_mapping(read_existing(live_file).settings)
+    assert all(band.color is None for band in thresholds.score_bands.bands)
+
+
+def test_the_ramp_still_re_stretches_after_a_seeded_refresh(live_file):
+    """Adding a category to a sheet that has already been seeded must re-shade the rest.
+
+    This is the failure the seed could have caused: seven bands painted with a
+    seven-band ramp, then an eighth added and eight categories sharing seven colours.
+    """
+    ws, _start, end = _band_rows(live_file, "score_bands")
+    ws.cell(row=end - 1, column=1, value="Utterly Dead")   # a spare row
+    ws.cell(row=end - 1, column=2, value=-50)
+    ws.parent.save(live_file)
+
+    thresholds, warnings = from_mapping(read_existing(live_file).settings)
+    assert warnings == []
+    assert len(thresholds.score_bands.bands) == 8
+
+    build_workbook(sample_stocks(), thresholds=thresholds).save(live_file)
+    ws, start, _end = _band_rows(live_file, "score_bands")
+    seeded = [ws.cell(row=start + n, column=1).fill.fgColor.rgb for n in range(8)]
+    assert len(set(seeded)) > 1, "eight categories collapsed onto one colour"
+
+
+def test_a_colour_follows_a_category_he_renames(live_file):
+    """Colour lives on the row, not on the word, because he re-words categories."""
+    _fill_band_name(live_file, "value_bands", 0, "FF7B341E")
+    ws, start, _end = _band_rows(live_file, "value_bands")
+    ws.cell(row=start, column=1, value="Once In A Lifetime")
+    ws.parent.save(live_file)
+
+    thresholds, _warnings = from_mapping(read_existing(live_file).settings)
+    assert thresholds.value_bands.band_for("Once In A Lifetime").color == "FF7B341E"
+
+
+def test_his_colour_reaches_the_sheets_he_actually_reads(live_file):
+    """Settings is where he sets it; Top Rankings and the Matrix are where he sees it.
+
+    Colouring a cell on a settings page that changes nothing elsewhere would be a worse
+    outcome than the bug -- it would look fixed and not be.
+    """
+    _fill_band_name(live_file, "value_bands", 0, "FF7B341E")
+    thresholds, _warnings = from_mapping(read_existing(live_file).settings)
+    build_workbook(sample_stocks(), thresholds=thresholds).save(live_file)
+
+    wb = load_workbook(live_file)
+    top = wb["Top Rankings"]
+    labels = [top.cell(row=r, column=10) for r in range(2, top.max_row + 1)]
+    matched = [c for c in labels if c.value == "Generational"]
+    assert matched, "no stock is in the band under test"
+    assert all(c.fill.fgColor.rgb == "FF7B341E" for c in matched)
+
+    matrix = wb["Opportunity Matrix"]
+    heads = [matrix.cell(row=5, column=c) for c in range(2, matrix.max_column + 1)]
+    header = next(c for c in heads if c.value == "Generational")
+    assert header.fill.fgColor.rgb == "FF7B341E"
+
+
+def test_a_dark_colour_gets_readable_text(live_file):
+    """He picks the fill; he should not also have to pick text that can be read on it."""
+    _fill_band_name(live_file, "score_bands", 0, "FF0B1F3A")
+    thresholds, _warnings = from_mapping(read_existing(live_file).settings)
+    build_workbook(sample_stocks(), thresholds=thresholds).save(live_file)
+
+    ws, start, _end = _band_rows(live_file, "score_bands")
+    name = ws.cell(row=start, column=1)
+    assert name.fill.fgColor.rgb == "FF0B1F3A"
+    assert name.font.color.rgb == theme.INK_INVERSE
