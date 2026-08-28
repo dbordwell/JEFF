@@ -126,6 +126,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path (Join-Path $appDir 'backups') | Out-Null
           Set-Content -Path (Join-Path $appDir 'backups\2026-08-24.xlsx') -Value 'yesterday' -Encoding ascii
 
+          # Upgrade with NO config.json beside the exe. Setup runs on every upgrade now,
+          # so it must fall back to the key already in %LOCALAPPDATA% rather than demand
+          # the original emailed attachment again. The install step above left one in
+          # dist\, which is exactly the condition that hid this: remove it, because the
+          # folder Jeff runs from months later may well not have it.
+          Remove-Item dist\config.json -Force
+
           # Stand in for "the previously installed version". Both builds in this job are
           # byte-identical, so without a marker a no-op upgrade would pass by leaving the
           # old copy sitting there. Replacing it first means the assertion below can only

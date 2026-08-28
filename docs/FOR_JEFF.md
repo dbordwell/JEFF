@@ -3,8 +3,9 @@
 Hi Jeff — everything on your "Requested Changes for Items 2.1" list is in.
 
 **To update:** download the new **AJZ-Setup.exe** and double-click it. That is the whole
-thing — you don't need the config file again, and there's nothing to uninstall first.
-Your watchlist and any settings you've changed carry across.
+thing. It doesn't matter which folder you run it from, you don't need the config file
+again, and there's nothing to uninstall first. Your watchlist and any settings you have
+changed carry across.
 
 After that, click **AJZ Dashboard** on your desktop as usual.
 

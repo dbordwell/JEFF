@@ -517,3 +517,72 @@ def test_status_reports_either_way_of_launching(tmp_path):
     assert result["shortcut_present"] is False
     assert result["bat_launcher_present"] is True
     assert result["can_launch_from_desktop"] is True
+
+
+# --- Upgrading a machine that is already configured -----------------------------------
+
+
+def _fake_exe(tmp_path):
+    """A stand-in for the downloaded installer, living outside the install dir."""
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir(exist_ok=True)
+    exe = downloads / EXE_NAME
+    exe.write_bytes(b"a new build")
+    return exe
+
+
+_ok_runner = FakeRunner()
+
+
+def test_an_upgrade_reuses_the_installed_key_when_none_is_supplied(tmp_path):
+    """Re-running setup on a configured machine must not demand the key again.
+
+    Jeff installed months ago; the key has been in %LOCALAPPDATA% ever since. Requiring
+    a config.json beside the exe on every upgrade means the upgrade fails unless he still
+    has the original email attachment in the folder he happens to run from -- and the
+    code's own comment says Downloads is somewhere he "may later empty".
+
+    Failing here is the worst shape of failure available: setup aborts before copying the
+    new program in, so he is left on the old version having been told the upgrade worked.
+    """
+    install(api_key="the-original-key", install_dir=tmp_path,
+            workbook_path=tmp_path / "wb.xlsx", shortcut_dir=tmp_path,
+            source_exe=_fake_exe(tmp_path), runner=_ok_runner)
+
+    report = install(install_dir=tmp_path, workbook_path=tmp_path / "wb.xlsx",
+                     shortcut_dir=tmp_path, source_exe=_fake_exe(tmp_path),
+                     runner=_ok_runner)
+
+    assert report is not None
+    assert json.loads((tmp_path / "config.json").read_text())["fmp_api_key"] == \
+        "the-original-key"
+
+
+def test_a_key_beside_the_exe_still_wins_over_the_installed_one(tmp_path):
+    """So a rotated key can be delivered the same way it always was."""
+    install(api_key="the-old-key", install_dir=tmp_path,
+            workbook_path=tmp_path / "wb.xlsx", shortcut_dir=tmp_path,
+            source_exe=_fake_exe(tmp_path), runner=_ok_runner)
+
+    install(api_key="the-rotated-key", install_dir=tmp_path,
+            workbook_path=tmp_path / "wb.xlsx", shortcut_dir=tmp_path,
+            source_exe=_fake_exe(tmp_path), runner=_ok_runner)
+
+    assert json.loads((tmp_path / "config.json").read_text())["fmp_api_key"] == \
+        "the-rotated-key"
+
+
+def test_a_first_install_with_no_key_anywhere_still_fails_loudly(tmp_path):
+    """The fallback must not turn a genuine missing-key into a silent half-install."""
+    with pytest.raises(InstallError, match="No API key"):
+        install(install_dir=tmp_path, workbook_path=tmp_path / "wb.xlsx",
+                shortcut_dir=tmp_path, source_exe=_fake_exe(tmp_path),
+                runner=_ok_runner)
+
+
+def test_an_unreadable_installed_config_is_not_mistaken_for_a_key(tmp_path):
+    (tmp_path / "config.json").write_text("{ this is not json")
+    with pytest.raises(InstallError, match="No API key"):
+        install(install_dir=tmp_path, workbook_path=tmp_path / "wb.xlsx",
+                shortcut_dir=tmp_path, source_exe=_fake_exe(tmp_path),
+                runner=_ok_runner)

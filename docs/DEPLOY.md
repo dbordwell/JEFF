@@ -98,8 +98,13 @@ Matrix's second axis and half of every alert rule with it.
 He upgrades the same way he installed: download the new **AJZ-Setup.exe** and double-click
 it. No manual step, nothing to migrate, and his Universe and Settings edits carry across.
 
-He does **not** need the emailed `config.json` again — the key is already in
-`%LOCALAPPDATA%\AJZ\`. That file is a first-install requirement only.
+He does **not** need the emailed `config.json` again. Setup takes the key from, in
+order: `--key`, a `config.json` beside the exe, then the one already installed in
+`%LOCALAPPDATA%\AJZ\`. So he can run the download from anywhere — Downloads, Desktop, a
+USB stick — and it will find the key it configured last time.
+
+Sending a `config.json` alongside still works and still wins, which is how a **rotated
+key** gets delivered: put the new one beside the exe and it overwrites the stored one.
 
 There is no exe on his desktop to swap out: the desktop item is a shortcut pointing into
 `%LOCALAPPDATA%\AJZ\`. Dropping a new build there by hand would work, but it means

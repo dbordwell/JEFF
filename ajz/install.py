@@ -263,6 +263,20 @@ def find_bundled_key(bundle_dir: Path | None = None) -> str | None:
     return None
 
 
+def _installed_key(install_dir: Path) -> str | None:
+    """The key from a previous install, or None if there isn't a usable one.
+
+    Deliberately quiet about corrupt files: an unreadable config is not a key, and
+    reporting "No API key available" is both true and more actionable than a JSON error.
+    """
+    path = install_dir / "config.json"
+    try:
+        key = str(json.loads(path.read_text()).get("fmp_api_key", "")).strip()
+    except (OSError, ValueError, AttributeError):
+        return None
+    return key or None
+
+
 def install(
     api_key: str | None = None,
     *,
@@ -278,7 +292,17 @@ def install(
     install_dir.mkdir(parents=True, exist_ok=True)
     workbook_path = workbook_path or (install_dir / WORKBOOK_NAME)
 
-    api_key = api_key or find_bundled_key()
+    # Key resolution, in priority order:
+    #   1. --key                     explicit wins over everything
+    #   2. config.json beside the exe how a new or rotated key is delivered
+    #   3. the installed config.json  an upgrade on a machine already set up
+    #
+    # (3) matters because setup now runs on every upgrade, not just the first install.
+    # Without it, upgrading demands that Jeff still has the original emailed config.json
+    # in whatever folder he runs from — and this file's own comment notes Downloads is
+    # somewhere he "may later empty". The failure lands before the new program is copied
+    # in, so he would be told setup failed and be left on the old version.
+    api_key = api_key or find_bundled_key() or _installed_key(install_dir)
     if not api_key:
         raise InstallError(
             "No API key available. Place a config.json containing "
