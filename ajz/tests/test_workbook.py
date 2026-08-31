@@ -293,3 +293,63 @@ def test_no_conviction_survives_anywhere_in_the_file(saved):
                 if isinstance(cell.value, str):
                     assert "onviction" not in cell.value, \
                         f"{ws.title}!{cell.coordinate}: {cell.value!r}"
+
+
+# --- Sheet protection must not block the one edit we invited -------------------------
+
+
+def test_settings_sheet_allows_jeff_to_change_a_fill():
+    """v2.1 asked him to colour the category cells. Protection was refusing to let him.
+
+    This is the gap that 304 passing tests could not see. openpyxl ignores sheet
+    protection entirely -- it will happily write a fill into a cell that Excel would
+    refuse -- so the colour round-trip tests proved the read-back worked while the
+    gesture they depend on was blocked on his machine.
+
+    In OOXML a sheetProtection attribute of "1" means the feature is PROTECTED, not
+    permitted. formatCells defaulted to 1, so every fill command on the Settings sheet
+    was refused. He reported it twice as "the colour didn't stick".
+    """
+    wb = build_workbook(sample_stocks())
+    assert wb["Settings"].protection.formatCells is False
+
+
+def test_the_generated_sheets_stay_locked_down():
+    """Only Settings opens up, and only for formatting.
+
+    Everything else is regenerated from scratch each refresh, so an edit there is work
+    he would lose without being told. Settings is the one sheet whose formatting we
+    read back, which is what makes it the one sheet worth unlocking.
+    """
+    wb = build_workbook(sample_stocks())
+    for name in ("Top Rankings", "Opportunity Matrix", "Alerts", "Movers"):
+        assert wb[name].protection.formatCells is not False, f"{name} was unlocked too"
+
+
+def test_the_saved_file_really_tells_excel_formatting_is_allowed(tmp_path):
+    """Assert on the bytes Excel reads, not on the openpyxl object.
+
+    The object model is our side of the contract; the sheetProtection element is the
+    side Excel enforces. They are not the same thing, and the whole defect was that the
+    library let us write a fill the application would have refused.
+    """
+    import re
+    import zipfile
+
+    path = tmp_path / "AJZ Dashboard.xlsx"
+    build_workbook(sample_stocks()).save(path)
+
+    with zipfile.ZipFile(path) as archive:
+        protections = [
+            re.search(r"<sheetProtection[^>]*/>", archive.read(name).decode())
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/sheet")
+        ]
+
+    found = [m.group(0) for m in protections if m]
+    assert found, "no sheet is protected at all"
+    permissive = [p for p in found if 'formatCells="0"' in p]
+    assert len(permissive) == 1, (
+        f"expected exactly one sheet to permit formatting, found {len(permissive)}"
+    )
+    assert all('sheet="1"' in p for p in found), "a sheet lost its protection entirely"

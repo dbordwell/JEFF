@@ -67,11 +67,21 @@ def _style_body(cell, *, bold: bool = False, ink: str = theme.INK_PRIMARY,
         cell.number_format = number_format
 
 
-def _protect(ws: Worksheet) -> None:
+def _protect(ws: Worksheet, allow_formatting: bool = False) -> None:
     """Read-only, but with no password.
 
     A password would produce a prompt, and a prompt is a thing Jeff has to understand.
     This only stops accidental typing, which is the actual risk.
+
+    `allow_formatting` is for the Settings sheet, and it is not a nicety. In OOXML a
+    sheetProtection attribute of "1" means the feature is PROTECTED, not permitted, and
+    formatCells defaults to "1". So protecting a sheet at all silently refuses every
+    fill command on it -- including on the unlocked cells we specifically asked Jeff to
+    colour. He reported that twice as "the colour didn't stick", and he was right both
+    times: Excel would not let him make the edit the feature is built on.
+
+    Permitting formatting cannot cost us anything. Formatting changes no value, the
+    sheet is rebuilt every refresh anyway, and the fill is now an input we read back.
     """
     # Note: never assign `protection.password`, not even None — openpyxl runs the
     # legacy hasher on whatever it is given and blows up on None. Leaving it unset is
@@ -79,6 +89,8 @@ def _protect(ws: Worksheet) -> None:
     ws.protection.sheet = True
     ws.protection.selectLockedCells = True
     ws.protection.selectUnlockedCells = True
+    if allow_formatting:
+        ws.protection.formatCells = False
 
 
 # --- Sheet 1: Dashboard ---------------------------------------------------------------
@@ -506,7 +518,8 @@ def _build_settings(ws: Worksheet, stocks: list[ScoredStock],
                                 getattr(thresholds, attr), stocks)
 
     ws.freeze_panes = "A2"
-    _protect(ws)
+    # The one sheet whose formatting is an input rather than an output.
+    _protect(ws, allow_formatting=True)
 
 
 def _band_counts(attr: str, table: BandTable,
