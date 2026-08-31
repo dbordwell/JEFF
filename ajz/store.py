@@ -220,6 +220,37 @@ class WorkbookLockedError(RuntimeError):
     """The workbook is open in Excel. Retry later; never write around it."""
 
 
+def assert_writable(path: Path) -> None:
+    """Raise WorkbookLockedError now if the workbook is open in Excel.
+
+    The write is the last step of a refresh, so without this check a locked file is
+    discovered only after every API call has been made, a backup taken, a history
+    snapshot recorded and the whole workbook built -- all of it then thrown away.
+    Jeff's log shows that happening three times in seven days, each costing him about
+    seventeen seconds and a second trip to the shortcut.
+
+    Excel on Windows holds the file with a deny-write share, so opening it for writing
+    fails. That is the same signal `atomic_save` relies on; this just asks the question
+    before doing the work instead of after. `atomic_save` keeps its own check, because
+    he can open the file during the refresh and only the check at the moment of writing
+    can be authoritative.
+    """
+    if not path.exists():
+        return
+    try:
+        with path.open("r+b"):
+            pass
+    except PermissionError as exc:
+        raise WorkbookLockedError(
+            f"Could not open {path} for writing. The dashboard is open in Excel; "
+            "close it and refresh again."
+        ) from exc
+    except OSError:
+        # Any other problem opening it is not ours to diagnose here. Let the refresh
+        # proceed and fail later with a more specific message if it is going to.
+        return
+
+
 def atomic_save(wb, path: Path) -> None:
     """Write to a temp file in the same directory, then swap it in.
 

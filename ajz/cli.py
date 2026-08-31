@@ -60,6 +60,22 @@ def emit(text: str) -> None:
         pass
 
 
+def _emit_warnings(warnings, emit) -> None:
+    """Put warnings on screen, not only in the log file.
+
+    They used to go to refresh.log alone -- a file Jeff has no reason to open and did
+    not know existed. His log carried "AMD: duplicate row in Universe sheet; kept the
+    first" for days while the dashboard looked perfectly fine to him. Every warning here
+    is about something he typed and can therefore fix, which makes the person who needs
+    to see it exactly the person who was not being shown it.
+    """
+    if not warnings:
+        return
+    emit("\nWorth a look:")
+    for warning in warnings:
+        emit(f"  - {warning}")
+
+
 def open_workbook(path: Path) -> bool:
     """Open the dashboard in whatever handles .xlsx. Best-effort by design."""
     if not path.exists():
@@ -221,6 +237,7 @@ def _do_refresh(args) -> int:
              "Close it and click again to get the latest numbers.")
         return 4
 
+    _emit_warnings(outcome.warnings, emit)
     for warning in outcome.warnings:
         log.warning("%s", warning)
 

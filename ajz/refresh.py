@@ -26,6 +26,7 @@ from .store import (
     WorkbookReadError,
     UniverseEntry,
     WorkbookLockedError,
+    assert_writable,
     atomic_save,
     archive_conviction,
     backup_workbook,
@@ -84,6 +85,12 @@ def refresh(
     """Run one refresh. Raises only for conditions where writing would lose data."""
     now = now or datetime.now()
     today = now.date()
+
+    # 0. Can we write at all? The write is the last thing that happens, so asking here
+    #    turns "seventeen seconds of work, then a locked file" into an immediate answer.
+    #    It is not a substitute for the check inside atomic_save -- he can open the
+    #    workbook while the refresh runs -- it just stops the common case being slow.
+    assert_writable(workbook_path)
 
     # 1. Read Jeff's data first. A failure here is fatal by design: if we cannot prove
     #    what he had, we must not overwrite it. This propagates to the caller.

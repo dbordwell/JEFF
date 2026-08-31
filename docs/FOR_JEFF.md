@@ -46,15 +46,18 @@ with no forward P/E"*. Type whatever you want there — "Pre-Profit", "Early Sta
 **One more thing worth knowing.** The Notes column now tells you *why* a stock has no
 P/E, and there are two different answers:
 
-- *"not expected to be profitable next year"* — a fact about the company. This is the
-  normal case and it's the one you want to track.
+- *"the company is not profitable and there is no forecast of profit"* — a fact about
+  the company. This is the normal case and it's the one you want to track.
 - *"no analyst estimates for this symbol"* — a fact about the **data**, not the company.
   If you see this, **check the ticker is right.** A symbol that doesn't exist looks
-  exactly like this, and so does a symbol that quietly matches a different company.
+  exactly like this, and so does one that quietly matches a different company.
 
-That last point is worth a look for SpaceX in particular — it's privately held, so there
-is no real ticker for it. Whatever symbol is in your Universe sheet for it is either
-returning nothing or returning somebody else's numbers.
+**On SPCX and CBRS specifically — I checked, and they're fine.** I'd raised a worry that
+SpaceX might not have a real ticker; that was wrong. FMP returns *Space Exploration
+Technologies Corp.* on NASDAQ for SPCX and *Cerebras Systems Inc.* on NASDAQ for CBRS,
+both actively trading, both matched correctly. Neither has any analyst coverage yet and
+both are currently loss-making, which is exactly why they had no forward P/E. They'll
+show up under the first note, not the second.
 
 ## 2. Your colours — the actual reason they never stuck
 
@@ -79,7 +82,21 @@ This is also the fix for the three category columns all coming out the same blue
 AJZ Score, Forward P/E and AJZ Value their own colour families and they stop blurring
 together when you read across.
 
-## 3. Excel going "not responding" — still looking
+## 3. Two things your log fixed straight away
+
+Thanks for the log — it was more useful than you thought.
+
+**Refreshing while the dashboard is open no longer wastes your time.** Your log has this
+shape three times in a week: you click refresh with the workbook open, it works for
+seventeen seconds, and only then discovers it can't write. Now it checks first, so you
+get told immediately instead of after the wait.
+
+**Warnings now appear on screen.** On the 27th your log recorded *"AMD: duplicate row in
+Universe sheet; kept the first"* — you had AMD in there twice and were never told,
+because warnings only went to the log file. They're printed in the window now. Worth
+checking your Universe sheet for that AMD row.
+
+## 4. Excel going "not responding" — still looking
 
 I pulled apart the generated file to check whether it's the workbook's fault. It isn't:
 47 cell styles, no volatile formulas, largest sheet is 19 rows by 12 columns. There's
@@ -100,15 +117,22 @@ be able to see.
 Paste that path into the Windows Explorer address bar and email me the file. Two
 questions that would help as much as the log:
 
-1. **How many tickers are you up to now?** There's no caching of the fundamentals yet —
-   it's 8 separate API calls per stock, one after another — so a much bigger universe
-   makes each refresh take much longer. That's a known thing we deferred at 24 tickers
-   and it may simply have come due.
-2. **Does Excel still hang if you open the dashboard file directly** instead of using
-   the desktop shortcut? That single answer separates my main theory from everything
-   else.
+**Your log ruled out my main theory.** I thought a bigger universe might be making the
+refresh slow enough to look hung. It isn't: 15 seconds at 24 tickers, 29 seconds at 44.
+It's got slower, but nowhere near "hung", and every single run in your log finished
+cleanly. So speed is not it.
 
-## 4. Truist and Adobe
+What's left is the moment the refresh hands off to Excel. One question would settle it:
+
+> **Does Excel still hang if you open the dashboard file directly** — from the AJZ
+> folder, or from Excel's own recent-files list — instead of clicking the desktop
+> shortcut?
+
+If it only hangs via the shortcut, it's us handing the file to Excel and I can fix it.
+If it hangs both ways, it's something on the machine and we look elsewhere. Either
+answer is progress.
+
+## 5. Truist and Adobe
 
 Noted, and it's the good kind of noticing — the rebucketing is doing exactly what it
 should. Whether they're genuinely generational is your call and not the spreadsheet's;

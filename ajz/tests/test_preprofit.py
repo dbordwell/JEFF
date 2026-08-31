@@ -80,9 +80,13 @@ class TestTheyDoNotPolluteTheAverages:
 
 
 class TestWhyThePeIsMissing:
-    def test_a_projected_loss_is_reported_as_not_yet_profitable(self):
+    def test_a_loss_making_company_is_reported_as_such(self):
+        """Worded to cover both routes here: an estimate projecting a loss, and no
+        estimate at all next to negative trailing earnings. SPCX and CBRS are the
+        second kind, so a note claiming analysts forecast a loss would overclaim."""
         note = " ".join(_stock("RIVN", absence=PEAbsence.NOT_PROFITABLE).notes)
-        assert "not expected to be profitable" in note.lower()
+        assert "not profitable" in note.lower()
+        assert "no forecast of profit" in note.lower()
 
     def test_no_coverage_is_reported_differently(self):
         """A fact about our data, not about the company -- and the likeliest sign of a

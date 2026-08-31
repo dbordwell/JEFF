@@ -123,9 +123,13 @@ def alerts_for(
 # rows it is not one: Jeff wants pre-profit companies tracked, and "no forward P/E" is a
 # stage of life, not a defect.
 _NO_VALUE_NOTES = {
+    # Worded to be true of both routes into NOT_PROFITABLE: an estimate that projects a
+    # loss, and no estimate at all alongside negative trailing earnings. SPCX and CBRS
+    # are the second kind -- FMP carries no analyst estimates for either, and both show
+    # a negative trailing P/E -- so "analysts expect a loss" would have overclaimed.
     PEAbsence.NOT_PROFITABLE:
-        "Ranked on AJZ Score only: not expected to be profitable next year, so there "
-        "is no forward P/E to value it against.",
+        "Ranked on AJZ Score only: the company is not profitable and there is no "
+        "forecast of profit to value it against, so there is no forward P/E.",
     PEAbsence.NO_ESTIMATE:
         "Ranked on AJZ Score only: no analyst estimates for this symbol, so there is "
         "no forward P/E. Worth checking the ticker is right.",
