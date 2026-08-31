@@ -34,7 +34,7 @@ import requests
 
 from .calc import UnitsError
 from .config import redact
-from .models import PEBasis, StockData
+from .models import PEAbsence, PEBasis, StockData
 from .refresh import AuthError, FetchError, FetchResult, QuotaError
 
 log = logging.getLogger(__name__)
@@ -236,7 +236,7 @@ def map_bundle(bundle: RawBundle, as_of: date | None = None) -> StockData:
     # than emitting 0, which is what made every v5.1 row read "Weak".
     price = values.get("price")
     forward_eps = values.get("forward_eps")
-    pe_ratio, pe_basis = _resolve_pe(price, forward_eps, bundle)
+    pe_ratio, pe_basis, pe_absence = _resolve_pe(price, forward_eps, bundle)
 
     data = StockData(
         ticker=bundle.ticker,
@@ -250,6 +250,7 @@ def map_bundle(bundle: RawBundle, as_of: date | None = None) -> StockData:
         roic=values.get("roic"),
         pe_ratio=pe_ratio,
         pe_basis=pe_basis,
+        pe_absence=pe_absence,
         as_of=as_of or date.today(),
         source="fmp",
     )
@@ -291,8 +292,15 @@ def _reports_in_trading_currency(bundle: RawBundle) -> bool:
 
 
 def _resolve_pe(price: Any, forward_eps: Any, bundle: RawBundle
-                ) -> tuple[float | None, PEBasis | None]:
-    """P/E fallback ladder (spec §5.7). Never returns 0."""
+                ) -> tuple[float | None, PEBasis | None, PEAbsence | None]:
+    """P/E fallback ladder (spec §5.7). Never returns 0.
+
+    The third element records WHY there is no P/E when there is none, because the two
+    causes send a stock to different places in Jeff's head. An estimate that exists and
+    is negative means the company is not expected to earn anything next year. No
+    estimate at all means nobody is covering the symbol -- which is also what a ticker
+    that does not exist looks like from here.
+    """
     price_value = _as_float(price)
     eps_value = _as_float(forward_eps)
 
@@ -301,16 +309,24 @@ def _resolve_pe(price: Any, forward_eps: Any, bundle: RawBundle
     # FMP computes correctly (TSM: 27.24). Guessing an FX rate would be worse than
     # honestly showing a flagged trailing figure.
     if price_value and eps_value and eps_value > 0 and _reports_in_trading_currency(bundle):
-        return price_value / eps_value, PEBasis.FORWARD
+        return price_value / eps_value, PEBasis.FORWARD, None
 
     # No usable forward estimate -> trailing P/E, explicitly flagged so the workbook can
     # show it. Forward and trailing must never be silently mixed.
     ratios = bundle.payloads.get("ratios-ttm") or {}
     trailing = _as_float(_first_present(ratios, ("priceToEarningsRatioTTM", "peRatioTTM")))
     if trailing and trailing > 0:
-        return trailing, PEBasis.TRAILING
+        return trailing, PEBasis.TRAILING, None
 
-    return None, None
+    # Nothing usable. Distinguish "the estimate says it will lose money" from "there is
+    # no estimate", and treat a zero or negative trailing P/E as corroborating the
+    # former -- a company already losing money, with no positive projection, is the
+    # pre-profit case rather than an uncovered one.
+    if eps_value is not None and eps_value <= 0:
+        return None, None, PEAbsence.NOT_PROFITABLE
+    if trailing is not None and trailing <= 0:
+        return None, None, PEAbsence.NOT_PROFITABLE
+    return None, None, PEAbsence.NO_ESTIMATE
 
 
 def _as_float(value: Any) -> float | None:

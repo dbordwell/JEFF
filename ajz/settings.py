@@ -73,6 +73,12 @@ class Thresholds:
     warning_value: float = 5.0
     exit_value: float = 3.0
 
+    # What to call companies with no forward P/E. A word, not a number, and his to
+    # choose for the same reason the band names are: he is the one who has to read it.
+    # He has variously called these "pre profit" and "unprofitable", which mean rather
+    # different things, so the sheet should not be the place that decides.
+    pre_profit_label: str = "Pre-Profit"
+
     def __post_init__(self) -> None:
         if self.exit_value > self.warning_value:
             raise ValueError(
@@ -94,10 +100,18 @@ class Thresholds:
              "Raise or lower this to make warnings rarer or more common."),
             ("exit_value", "EXIT alert: AJZ Value below", self.exit_value,
              "Must not be above the WARNING number — an exit is the more serious call."),
+            ("pre_profit_label", "Name for companies with no forward P/E",
+             self.pre_profit_label,
+             "These are ranked on AJZ Score alone and never enter the averages."),
         ]
 
 
 DEFAULT_THRESHOLDS = Thresholds()
+
+# Text settings are parsed as words; everything else scalar is parsed as a number.
+# Kept explicit rather than inferred from the annotation so that adding a field cannot
+# silently change how an existing one is read.
+_TEXT_FIELDS = {"pre_profit_label"}
 
 _SCALAR_FIELDS = {
     f.name for f in fields(Thresholds) if not f.name.endswith("_bands")
@@ -120,6 +134,9 @@ def from_mapping(values: dict[str, object]) -> tuple[Thresholds, list[str]]:
             continue
         if raw is None or (isinstance(raw, str) and not raw.strip()):
             continue
+        if key in _TEXT_FIELDS:
+            kwargs[key] = str(raw).strip()
+            continue
         try:
             kwargs[key] = float(str(raw).strip().rstrip("%"))
         except (TypeError, ValueError):
@@ -140,5 +157,6 @@ def from_mapping(values: dict[str, object]) -> tuple[Thresholds, list[str]]:
         # Keep his tables even when a scalar is contradictory: the two are independent
         # judgements, and throwing away seven good bands over one bad number is worse
         # than the bad number.
-        tables = {k: v for k, v in kwargs.items() if k.endswith("_bands")}
-        return replace(DEFAULT_THRESHOLDS, **tables), warnings
+        keep = {k: v for k, v in kwargs.items()
+                if k.endswith("_bands") or k in _TEXT_FIELDS}
+        return replace(DEFAULT_THRESHOLDS, **keep), warnings

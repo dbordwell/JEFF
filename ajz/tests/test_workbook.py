@@ -133,27 +133,53 @@ def test_universe_active_column_is_a_yes_no_list(saved):
 def test_no_phantom_empty_rows_on_rankings(saved, stocks):
     """REGRESSION (v5.1): 499 pre-filled rows whose formulas returned 0.
 
-    The rankings sheet must hold exactly one row per real stock, plus the header.
+    Stated as "one data row per real stock, and no data row that is not one". The sheet
+    also carries section headings now, which are not data and are excluded by looking
+    only at rows that name a ticker — a heading cannot accidentally satisfy that, and a
+    phantom row cannot hide behind it either.
     """
     ws = saved["Top Rankings"]
-    assert ws.max_row == len(stocks) + 1
+    tickers = [ws.cell(row=r, column=2).value for r in range(2, ws.max_row + 1)
+               if ws.cell(row=r, column=2).value]
+    assert len(tickers) == len(stocks)
+    assert sorted(tickers) == sorted(s.ticker for s in stocks)
+
+
+def test_every_stock_appears_exactly_once_across_the_three_sections(saved, stocks):
+    """The sheet splits into ranked, pre-profit and unscored. A stock must land in
+    exactly one — a stock counted twice inflates nothing, but a stock in none has been
+    silently dropped, which is the failure Jeff reported."""
+    ws = saved["Top Rankings"]
+    seen = [ws.cell(row=r, column=2).value for r in range(2, ws.max_row + 1)
+            if ws.cell(row=r, column=2).value]
+    assert len(seen) == len(set(seen)), "a stock is listed twice"
+    assert set(seen) == {s.ticker for s in stocks}
 
 
 def test_unrankable_stocks_are_shown_but_not_ranked(saved):
-    """RIVN is loss-making: it must appear, with no rank number."""
+    """RIVN has no forward P/E: it appears, but never with a main-ranking number.
+
+    It now carries a "P1" from the pre-profit section rather than a dash. The invariant
+    that matters is unchanged and is what this asserts: whatever is in its Rank cell
+    must not be an integer, because an integer there means the main ranking — and a
+    stock with no AJZ Value Score has no business in it.
+    """
     ws = saved["Top Rankings"]
     rows = {ws.cell(row=r, column=2).value: r for r in range(2, ws.max_row + 1)}
     assert "RIVN" in rows
-    assert ws.cell(row=rows["RIVN"], column=1).value == "—"
+    assert not isinstance(ws.cell(row=rows["RIVN"], column=1).value, int)
 
 
 def test_ranked_stocks_are_in_descending_value_order(saved):
     ws = saved["Top Rankings"]
     values = []
     for r in range(2, ws.max_row + 1):
-        if ws.cell(row=r, column=1).value == "—":
+        # The main ranking is exactly the rows numbered with an integer. It ends at the
+        # first row that is not, which is the pre-profit heading.
+        if not isinstance(ws.cell(row=r, column=1).value, int):
             break
         values.append(ws.cell(row=r, column=9).value)   # AJZ Value moved to column I
+    assert len(values) > 1
     assert values == sorted(values, reverse=True)
 
 
@@ -272,12 +298,27 @@ def test_every_ranked_row_carries_all_three_category_words(saved):
     assert headers[4:10] == ["AJZ Score", "Score Category", "Forward P/E",
                              "P/E Category", "AJZ Value", "Value Category"]
 
-    for row in range(2, ws.max_row + 1):
-        if ws.cell(row=row, column=1).value == "—":
-            continue   # unrankable rows legitimately have no Value category
+    ranked_rows = [row for row in range(2, ws.max_row + 1)
+                   if isinstance(ws.cell(row=row, column=1).value, int)]
+    assert ranked_rows, "nothing is in the main ranking"
+    for row in ranked_rows:
         for col in (6, 8, 10):
             assert ws.cell(row=row, column=col).value not in (None, ""), \
                 f"row {row} column {col} has no category word"
+
+
+def test_pre_profit_rows_still_carry_a_score_category(saved):
+    """They have no P/E and no Value, but they DO have an AJZ Score — so the one word
+    that is meaningful for them must still be there. A row of dashes would read as a
+    broken row rather than as a company at an earlier stage."""
+    ws = saved["Top Rankings"]
+    pre_profit_rows = [row for row in range(2, ws.max_row + 1)
+                       if str(ws.cell(row=row, column=1).value or "").startswith("P")
+                       and ws.cell(row=row, column=2).value]
+    assert pre_profit_rows, "no pre-profit rows on the sheet"
+    for row in pre_profit_rows:
+        assert ws.cell(row=row, column=5).value not in (None, ""), "no AJZ Score"
+        assert ws.cell(row=row, column=6).value not in (None, ""), "no Score Category"
 
 
 def test_no_conviction_survives_anywhere_in_the_file(saved):

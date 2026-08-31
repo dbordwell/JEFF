@@ -229,7 +229,7 @@ def _do_refresh(args) -> int:
              __version__, outcome.status.state.value, len(outcome.stocks), len(ranked), outcome.written)
 
     emit(f"\n{outcome.status.headline}")
-    emit(f"{len(ranked)} of {len(outcome.stocks)} stocks scored and ranked.")
+    emit(f"{len(ranked)} of {len(outcome.stocks)} stocks ranked on AJZ Value.")
 
     if args.verbose and ranked:
         emit(f"\n{'rank':>4}  {'ticker':<7}{'AJZ':>8}{'fwd P/E':>9}{'value':>8}  "
@@ -239,7 +239,16 @@ def _do_refresh(args) -> int:
                   f"{s.forward_pe or 0:>9.1f}{s.ajz_value_score:>8.2f}  "
                   f"{s.value_label or '—':<14}")
 
-    unrated = [s for s in outcome.stocks if not s.is_rankable]
+    # Reported separately from "not scored", because they are not the same thing and
+    # lumping them together is what made Jeff think stocks were being dropped. These
+    # have a full AJZ Score and a place on both sheets; they simply have no P/E.
+    pre_profit = [s for s in outcome.stocks if s.is_pre_profit]
+    if pre_profit:
+        emit(f"\nRanked on AJZ Score only, no forward P/E ({len(pre_profit)}): "
+             f"{', '.join(s.ticker for s in pre_profit)}")
+
+    unrated = [s for s in outcome.stocks
+               if not s.is_rankable and not s.is_pre_profit]
     if unrated:
         emit(f"\nNot scored ({len(unrated)}): {', '.join(s.ticker for s in unrated)}")
         for s in unrated:

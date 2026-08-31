@@ -1,25 +1,126 @@
-# AJZ v2.1 — the colour problems, fixed
+# AJZ v3.0 — pre-profit companies, and your colours
 
-Hi Jeff — both things you flagged about the colours are sorted, and the fix for the
-second one turned into something better than putting your formatting back.
+Hi Jeff — three things.
 
-**Short version:**
+**To update:** download the new **AJZ-Setup.exe** and double-click it. No config file,
+nothing to uninstall, doesn't matter what folder you run it from. Your watchlist,
+settings and history all carry across.
 
-1. **The Forward P/E colours were backwards.** A real bug, and worth knowing about
-   because the colour was telling you the opposite of what the number said.
-2. **Your colour-coding didn't save.** Our fault, not yours — and now the colours you
-   pick don't just stick, they drive the whole workbook.
+## 1. Pre-profit companies now have their own bucket
 
-Everything from v2.0 below that, unchanged, in case you want it again.
+You were right that they shouldn't just be listed and forgotten, and right again that
+defaulting the P/E to zero would blow the sheet up. Here's what they do now.
 
-**To update:** download the new **AJZ-Setup.exe** and double-click it. That is the whole
-thing. It doesn't matter which folder you run it from, you don't need the config file
-again, and there's nothing to uninstall first. Your watchlist and any settings you have
-changed carry across.
+**Top Rankings** has a second section under the main ranking:
 
-After that, click **AJZ Dashboard** on your desktop as usual.
+```
+  18   ADBE   ...                     (ranked on AJZ Value)
+  19   TFC    ...
+─────────────────────────────────────────────────────────────
+  Pre-Profit — ranked on AJZ Score only
+  (no forward P/E, and never included in any average)
+  P1   RIVN   132.4   —   —
+  P2   ...
+```
 
-## 1. Forward P/E was shaded the wrong way round
+They're numbered **P1, P2, P3** rather than continuing 20, 21, 22 — because the number
+above is an AJZ Value Score and the number here is an AJZ Score, and those are different
+quantities. Numbering them in one sequence would invite reading them as one list.
+
+**Opportunity Matrix** gets a column on the far right for them, headed with the AJZ Score
+rather than a Value Score. It's deliberately grey rather than coloured: it isn't a rung
+on the Value ladder, it's the companies the ladder can't measure.
+
+**They never touch an average**, exactly as you asked. The Portfolio Quality Index and
+every other headline number ignores them completely.
+
+**Why AJZ Score is the right ranking for them:** it's revenue growth, gross margin, FCF
+margin and ROIC. None of those needs the company to be profitable. So it says something
+true about a pre-profit business, where AJZ Value Score — which is Score ÷ P/E — can't
+say anything at all.
+
+**You can rename the bucket.** There's a new row on **Settings**: *"Name for companies
+with no forward P/E"*. Type whatever you want there — "Pre-Profit", "Early Stage",
+"Unprofitable" — and it changes on both sheets.
+
+**One more thing worth knowing.** The Notes column now tells you *why* a stock has no
+P/E, and there are two different answers:
+
+- *"not expected to be profitable next year"* — a fact about the company. This is the
+  normal case and it's the one you want to track.
+- *"no analyst estimates for this symbol"* — a fact about the **data**, not the company.
+  If you see this, **check the ticker is right.** A symbol that doesn't exist looks
+  exactly like this, and so does a symbol that quietly matches a different company.
+
+That last point is worth a look for SpaceX in particular — it's privately held, so there
+is no real ticker for it. Whatever symbol is in your Universe sheet for it is either
+returning nothing or returning somebody else's numbers.
+
+## 2. Your colours — the actual reason they never stuck
+
+I owe you an apology on this one. You reported it twice, and both times you were right.
+
+The Settings sheet is protected so you can't accidentally overwrite the parts we
+regenerate. What I missed is that Excel's sheet protection **also blocks changing a
+cell's fill colour** — even on the cells we'd deliberately left unlocked for you to
+edit. So when you tried to colour the category names, Excel was refusing the change.
+Nothing you did was wrong; the door was locked.
+
+That's fixed. You can now colour the category name cells on Settings, and — as of the
+last update — **whatever colour you pick becomes that category's colour everywhere it
+appears**: the Top Rankings columns and the Opportunity Matrix headers, not just the
+Settings sheet. Your three tables are the legend for the whole workbook.
+
+- Any colour in Excel's picker works, including the theme colours along the top row.
+- The text colour looks after itself — pick something dark and the writing turns white.
+- To go back to ours: Home → Fill Colour → No Fill.
+
+This is also the fix for the three category columns all coming out the same blue. Give
+AJZ Score, Forward P/E and AJZ Value their own colour families and they stop blurring
+together when you read across.
+
+## 3. Excel going "not responding" — still looking
+
+I pulled apart the generated file to check whether it's the workbook's fault. It isn't:
+47 cell styles, no volatile formulas, largest sheet is 19 rows by 12 columns. There's
+nothing in that file for Excel to struggle with.
+
+So it's something about how it's being opened rather than what's in it. My leading
+theory is that after a refresh we ask Windows to open the workbook, and if Excel is
+already busy — or already has that file open, or is sitting mid-edit in another workbook
+— that request can stall and freeze the whole application behind a dialog you may not
+be able to see.
+
+**To confirm it, I need the log file:**
+
+```
+%LOCALAPPDATA%\AJZ\logs\refresh.log
+```
+
+Paste that path into the Windows Explorer address bar and email me the file. Two
+questions that would help as much as the log:
+
+1. **How many tickers are you up to now?** There's no caching of the fundamentals yet —
+   it's 8 separate API calls per stock, one after another — so a much bigger universe
+   makes each refresh take much longer. That's a known thing we deferred at 24 tickers
+   and it may simply have come due.
+2. **Does Excel still hang if you open the dashboard file directly** instead of using
+   the desktop shortcut? That single answer separates my main theory from everything
+   else.
+
+## 4. Truist and Adobe
+
+Noted, and it's the good kind of noticing — the rebucketing is doing exactly what it
+should. Whether they're genuinely generational is your call and not the spreadsheet's;
+what matters is that the sheet moved them because the underlying numbers moved, and you
+can see it happen. If the cut-offs feel wrong now that real names are landing in the top
+band, that's what the Settings table is for.
+
+---
+
+# From v2.1
+
+## Forward P/E was shaded the wrong way round
 
 This one was a genuine bug and you found it without knowing you had.
 
@@ -33,7 +134,7 @@ So CRWD at 176x and NET at 240x were sitting in the strongest blue on the sheet,
 pointing you at exactly the wrong stocks. Now "Cheap" is the strong end and "Bubble" is
 the pale one.
 
-## 2. Your colour-coding, and what it now does
+## Your colour-coding, and what it now does
 
 You coloured the category names in column A of Settings to make the tables easier to
 read, saved, and the refresh wiped them.

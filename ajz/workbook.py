@@ -26,7 +26,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from . import __version__, palette, theme
 from .bands import BandTable
-from .calc import rank_stocks
+from .calc import rank_pre_profit, rank_stocks
 from .models import ScoredStock
 from .settings import (
     BAND_TABLES,
@@ -179,21 +179,55 @@ def _build_rankings(ws: Worksheet, stocks: list[ScoredStock],
     _write_header(ws, 1, headers, widths)
 
     ranked = rank_stocks(stocks)
-    unrankable = [s for s in stocks if not s.is_rankable]
+    pre_profit = rank_pre_profit(stocks)
+    unscored = [s for s in stocks if not s.is_rankable and not s.is_pre_profit]
 
     row = 2
     for position, s in enumerate(ranked, start=1):
         _write_ranking_row(ws, row, s, position, thresholds)
         row += 1
 
-    # Unrankable rows are shown but never ranked — they are visible so Jeff knows they
-    # exist, and excluded so they cannot pollute an average.
-    for s in unrankable:
-        _write_ranking_row(ws, row, s, None, thresholds)
+    # Pre-profit companies, ranked on AJZ Score. Jeff asked for these to be included
+    # rather than merely listed -- he expects to invest in some of them -- but was clear
+    # that they "shouldn't pollute the others", so they sit under their own heading with
+    # their own numbering and stay out of every average.
+    #
+    # The rank reads "P1", not "1". Two orderings on one sheet in one column is exactly
+    # the sort of thing that gets read as one ordering, and these are not comparable:
+    # the number above is an AJZ Value Score, the number here is an AJZ Score.
+    if pre_profit:
         row += 1
+        heading = ws.cell(
+            row=row, column=1,
+            value=f"{thresholds.pre_profit_label} — ranked on AJZ Score only "
+                  f"(no forward P/E, and never included in any average)")
+        heading.font = Font(name=theme.FONT, bold=True, size=11,
+                            color=theme.INK_SECONDARY)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)
+        row += 1
+        for position, s in enumerate(pre_profit, start=1):
+            _write_ranking_row(ws, row, s, None, thresholds, rank_text=f"P{position}")
+            row += 1
+
+    # Everything else: rows with no AJZ Score at all. Missing data, not missing
+    # earnings, so there is nothing honest to rank them on.
+    if unscored:
+        row += 1
+        heading = ws.cell(row=row, column=1,
+                          value="Not scored — see the Notes column for what is missing")
+        heading.font = Font(name=theme.FONT, bold=True, size=11, color=theme.INK_MUTED)
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)
+        row += 1
+        for s in unscored:
+            _write_ranking_row(ws, row, s, None, thresholds)
+            row += 1
 
     ws.freeze_panes = "C2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(row - 1, 1)}"
+    # The filter covers the main ranking only. Extending it over the section headings
+    # below would let a filter interleave three lists that are ordered on three
+    # different quantities — which is the exact confusion the headings exist to prevent.
+    last_ranked = 1 + len(ranked)
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{max(last_ranked, 1)}"
     _protect(ws)
 
 
@@ -233,11 +267,13 @@ def _banded(ws: Worksheet, row: int, col: int, label: str | None,
 
 
 def _write_ranking_row(ws: Worksheet, row: int, s: ScoredStock,
-                       position: int | None, thresholds: Thresholds) -> None:
+                       position: int | None, thresholds: Thresholds,
+                       rank_text: str | None = None) -> None:
     d = s.data
-    rank_cell = ws.cell(row=row, column=1, value=position if position else "—")
+    rank_cell = ws.cell(row=row, column=1,
+                        value=rank_text or (position if position else "—"))
     _style_body(rank_cell, bold=True, align="center",
-                ink=theme.INK_PRIMARY if position else theme.INK_MUTED)
+                ink=theme.INK_PRIMARY if (position or rank_text) else theme.INK_MUTED)
 
     _style_body(ws.cell(row=row, column=2, value=d.ticker), bold=True)
     _style_body(ws.cell(row=row, column=3, value=d.company or ""))
@@ -290,6 +326,7 @@ def _build_matrix(ws: Worksheet, stocks: list[ScoredStock],
     sub.font = Font(name=theme.FONT, size=11, italic=True, color=theme.INK_SECONDARY)
 
     ranked = rank_stocks(stocks)
+    pre_profit = rank_pre_profit(stocks)
     bands = thresholds.value_bands.bands
     ranges = thresholds.value_bands.display_ranges()
 
@@ -323,13 +360,37 @@ def _build_matrix(ws: Worksheet, stocks: list[ScoredStock],
                               color=theme.INK_MUTED)
             empty.alignment = Alignment(horizontal="center")
 
-    unrankable = [s for s in stocks if not s.is_rankable]
-    if unrankable:
-        row = 9 + max((sum(1 for s in ranked if s.value_label == b.label)
-                       for b in bands), default=0)
+    # The pre-profit column. Deliberately last and deliberately neutral-coloured: it is
+    # not a rung on the Value ladder, it is the set of companies the ladder cannot
+    # measure. Giving it a band colour would place it in an order it has no place in.
+    if pre_profit:
+        col = 2 + len(bands)
+        ws.column_dimensions[get_column_letter(col)].width = 20
+
+        head = ws.cell(row=5, column=col, value=thresholds.pre_profit_label)
+        head.fill = _fill(theme.NEUTRAL_FILL)
+        head.font = Font(name=theme.FONT, bold=True, size=12, color=theme.INK_SECONDARY)
+        head.alignment = Alignment(horizontal="center", vertical="center")
+
+        cap = ws.cell(row=6, column=col, value="AJZ Score — no P/E")
+        cap.font = Font(name=theme.FONT, size=9, italic=True, color=theme.INK_MUTED)
+        cap.alignment = Alignment(horizontal="center")
+
+        # The AJZ Score, not the Value Score, and labelled as such in the caption above.
+        # A bare number under a column of Value Scores would be read as one.
+        for offset, stock in enumerate(pre_profit):
+            cell = ws.cell(row=7 + offset, column=col,
+                           value=f"{stock.data.ticker}   {stock.ajz_score:.0f}")
+            cell.font = Font(name=theme.FONT, size=11)
+            cell.alignment = Alignment(horizontal="center")
+
+    unscored = [s for s in stocks if not s.is_rankable and not s.is_pre_profit]
+    if unscored:
+        row = 9 + max([sum(1 for s in ranked if s.value_label == b.label)
+                       for b in bands] + [len(pre_profit)], default=0)
         note = ws.cell(row=row, column=2,
-                       value=f"Not scored: {', '.join(s.ticker for s in unrankable)} — "
-                             "no usable P/E, so no AJZ Value Score to categorise.")
+                       value=f"Not scored: {', '.join(s.ticker for s in unscored)} — "
+                             "see the Notes column on Top Rankings for what is missing.")
         note.font = Font(name=theme.FONT, size=10, italic=True, color=theme.INK_MUTED)
 
     _protect(ws)
@@ -508,7 +569,10 @@ def _build_settings(ws: Worksheet, stocks: list[ScoredStock],
         cell = ws.cell(row=row, column=2, value=value)
         _style_body(cell, bold=True, align="center")
         cell.protection = Protection(locked=False)
-        positive.add(cell)
+        # Only the numeric settings get the numeric validator. Attaching it to a text
+        # setting would make Excel reject the word he is supposed to type there.
+        if not isinstance(value, str):
+            positive.add(cell)
         _style_body(ws.cell(row=row, column=3, value=explanation), ink=theme.INK_MUTED)
         ws.cell(row=row, column=4, value=key)
         row += 1

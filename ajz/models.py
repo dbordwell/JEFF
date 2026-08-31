@@ -27,6 +27,26 @@ class PEBasis(str, Enum):
     TRAILING = "trailing"
 
 
+class PEAbsence(str, Enum):
+    """Why a row has no P/E. Recorded because the two causes are not the same problem.
+
+    NOT_PROFITABLE is a fact about the company: analysts project a loss, so no forward
+    P/E exists to compute. That is investable information -- Jeff explicitly wants these
+    tracked ("there will be pre-profit companies that should be tracked and potentially
+    invested in").
+
+    NO_ESTIMATE is a fact about our data: nobody is covering it, or the symbol returned
+    nothing. That is a gap he may be able to close himself, and it is the likeliest
+    signature of a ticker that does not exist -- which matters, because a symbol that
+    silently matches the wrong company is this project's worst failure mode.
+
+    Collapsing the two into "no P/E" would hide the second inside the first.
+    """
+
+    NOT_PROFITABLE = "not_profitable"
+    NO_ESTIMATE = "no_estimate"
+
+
 class Alert(str, Enum):
     BUY = "BUY"
     UPGRADE = "UPGRADE"
@@ -53,6 +73,7 @@ class StockData:
 
     pe_ratio: float | None = None
     pe_basis: PEBasis | None = None
+    pe_absence: PEAbsence | None = None
 
     as_of: date | None = None
     source: str | None = None
@@ -62,6 +83,12 @@ class StockData:
             raise ValueError(
                 f"{self.ticker}: pe_ratio given without pe_basis. "
                 "Forward and trailing P/E must never be mixed silently (spec §5.5)."
+            )
+        if self.pe_ratio is not None and self.pe_absence is not None:
+            raise ValueError(
+                f"{self.ticker}: has a P/E of {self.pe_ratio} and also a reason for "
+                "not having one. One of the two is wrong, and guessing which would "
+                "put a stock in the wrong bucket."
             )
 
 
@@ -98,6 +125,19 @@ class ScoredStock:
     @property
     def ticker(self) -> str:
         return self.data.ticker
+
+    @property
+    def is_pre_profit(self) -> bool:
+        """Scored on quality, but with no P/E to value it against.
+
+        Deliberately NOT the same as "unrankable". A row with no AJZ Score at all is
+        also unrankable, but it is missing data rather than missing earnings, and
+        ranking it on quality would mean ranking it on a number we do not have.
+
+        The pair (is_rankable, is_pre_profit) is mutually exclusive by construction, so
+        no stock can be counted twice or fall between the two.
+        """
+        return self.ajz_score is not None and self.ajz_value_score is None
 
     @property
     def is_rankable(self) -> bool:

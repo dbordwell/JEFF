@@ -10,4 +10,4 @@ something looks wrong, the first question is what he is actually running, and th
 no way for him to answer it.
 """
 
-__version__ = "2.1.0"
+__version__ = "3.0.0"

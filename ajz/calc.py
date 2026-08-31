@@ -19,7 +19,7 @@ errored, it just quietly reported zeros that looked like "no data loaded yet".
 
 from __future__ import annotations
 
-from .models import Alert, ScoredStock, StockData
+from .models import Alert, PEAbsence, ScoredStock, StockData
 from .settings import DEFAULT_THRESHOLDS, Thresholds
 
 # Band tables no longer live here. They are Jeff's, they change, and they are edited on
@@ -118,6 +118,31 @@ def alerts_for(
     return tuple(found)
 
 
+# What the Notes column says for a row that has a quality score but nothing to value it
+# against. Worded as plain English rather than as a fault, because for most of these
+# rows it is not one: Jeff wants pre-profit companies tracked, and "no forward P/E" is a
+# stage of life, not a defect.
+_NO_VALUE_NOTES = {
+    PEAbsence.NOT_PROFITABLE:
+        "Ranked on AJZ Score only: not expected to be profitable next year, so there "
+        "is no forward P/E to value it against.",
+    PEAbsence.NO_ESTIMATE:
+        "Ranked on AJZ Score only: no analyst estimates for this symbol, so there is "
+        "no forward P/E. Worth checking the ticker is right.",
+}
+
+
+def _no_value_note(data: StockData) -> str:
+    """Why this row has no AJZ Value Score, in the most specific terms we can justify."""
+    if data.pe_absence is not None:
+        return _NO_VALUE_NOTES[data.pe_absence]
+    if data.pe_ratio is None:
+        return "Ranked on AJZ Score only: no forward P/E available."
+    # A P/E that exists but is not positive. The adapter never produces this, but a
+    # hand-built row can, and it is exactly v5.1's IFERROR(...,0) case.
+    return "No AJZ Value Score: company is loss-making (P/E <= 0)"
+
+
 def score_stock(
     data: StockData,
     score_moved_pct: float | None = None,
@@ -141,10 +166,7 @@ def score_stock(
 
     value = ajz_value_score(score, data.pe_ratio)
     if score is not None and value is None:
-        if data.pe_ratio is None:
-            notes.append("No AJZ Value Score: no P/E available")
-        else:
-            notes.append("No AJZ Value Score: company is loss-making (P/E <= 0)")
+        notes.append(_no_value_note(data))
 
     # Surfaced so a trailing-P/E row is visibly different in the workbook rather than
     # quietly blended with forward-P/E rows.
@@ -173,6 +195,21 @@ def rank_stocks(stocks: list[ScoredStock]) -> list[ScoredStock]:
     """Rankable stocks sorted by AJZ Value Score, best first. Unrankable are dropped."""
     rankable = [s for s in stocks if s.is_rankable]
     return sorted(rankable, key=lambda s: s.ajz_value_score, reverse=True)
+
+
+def rank_pre_profit(stocks: list[ScoredStock]) -> list[ScoredStock]:
+    """Pre-profit stocks sorted by AJZ Score, best first.
+
+    A separate ordering rather than a separate sort key on one list, because the two
+    lists are not comparable and must never be merged: an AJZ Score of 140 and an AJZ
+    Value Score of 14 are different quantities in different units.
+
+    AJZ Score is the right lens for these. It is revenue growth, gross margin, FCF
+    margin and ROIC -- none of which needs positive earnings -- so it says something
+    true about a pre-profit company, where AJZ Value Score cannot say anything at all.
+    """
+    pre_profit = [s for s in stocks if s.is_pre_profit]
+    return sorted(pre_profit, key=lambda s: s.ajz_score, reverse=True)
 
 
 def average_ajz_value(stocks: list[ScoredStock]) -> float | None:
